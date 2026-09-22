@@ -1,5 +1,4 @@
 export default async function handler(req, res) {
-  // Autoriser les requêtes depuis ton site
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET');
 
@@ -16,7 +15,8 @@ export default async function handler(req, res) {
     } else if (type === 'summoner') {
       url = `https://euw1.api.riotgames.com/lol/summoner/v4/summoners/by-puuid/${value}?api_key=${apiKey}`;
     } else if (type === 'league') {
-      url = `https://euw1.api.riotgames.com/lol/league/v4/entries/by-summoner/${value}?api_key=${apiKey}`;
+      // Utilisation du PUUID directement (nouvelle méthode Riot)
+      url = `https://euw1.api.riotgames.com/lol/league/v4/entries/by-puuid/${value}?api_key=${apiKey}`;
     }
 
     const response = await fetch(url);

@@ -297,15 +297,15 @@
                             throw new Error(accountData.error || `Erreur Account (${accountRes.status})`);
                         }
 
-                        // 2. Récupération du Summoner ID & icône
+                        // 2. Récupération du Summoner (icône de profil)
                         const summonerRes = await fetch(`/api/riot?type=summoner&value=${accountData.puuid}&apiKey=${encodeURIComponent(apiKey.trim())}`);
                         const summonerData = await summonerRes.json();
                         if (!summonerRes.ok) {
                             throw new Error(summonerData.error || `Erreur Summoner (${summonerRes.status})`);
                         }
 
-                        // 3. Récupération des entrées de rang
-                        const leagueRes = await fetch(`/api/riot?type=league&value=${summonerData.id}&apiKey=${encodeURIComponent(apiKey.trim())}`);
+                        // 3. Récupération des entrées de rang via PUUID
+                        const leagueRes = await fetch(`/api/riot?type=league&value=${accountData.puuid}&apiKey=${encodeURIComponent(apiKey.trim())}`);
                         const leagueData = await leagueRes.json();
                         if (!leagueRes.ok) {
                             throw new Error(leagueData.error || `Erreur League (${leagueRes.status})`);
