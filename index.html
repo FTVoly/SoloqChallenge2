@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SoloQ Challenge</title>
+    
+    <!-- Tailwind CSS pour le design -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Babel pour lire le code React directement dans le navigateur -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- Import Map pour charger React, les icônes et Firebase -->
+    <script type="importmap">
+    {
+        "imports": {
+            "react": "https://esm.sh/react@18.2.0",
+            "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+            "lucide-react": "https://esm.sh/lucide-react@0.294.0",
+            "firebase/app": "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js",
+            "firebase/auth": "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js",
+            "firebase/firestore": "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js"
+        }
+    }
+    </script>
+
+    <style>
+        body { 
+            background-color: #0f1219; 
+            color: #e2e8f0; 
+            font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; 
+        }
+        .hide-scrollbar::-webkit-scrollbar { display: none; }
+        .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel" data-type="module">
+        import React, { useState, useEffect, useMemo } from 'react';
+        import { createRoot } from 'react-dom/client';
+        import { Trophy, Swords, BookOpen, UserPlus, Settings, Edit2, ChevronDown, Check, X, Users, Twitch, ExternalLink, Gamepad2, Image as ImageIcon, Lock, Unlock, AlertTriangle } from 'lucide-react';
+        import { initializeApp } from 'firebase/app';
+        import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+        import { getFirestore, doc, setDoc, onSnapshot, collection, addDoc, updateDoc, deleteDoc } from 'firebase/firestore';
+
+        const firebaseConfig = {
+            apiKey: "AIzaSyBwNrlXY81VOXtp2EGyFb_k3OWHKbtcY2o",
+            authDomain: "soloq-challenge-5a13b.firebaseapp.com",
+            projectId: "soloq-challenge-5a13b",
+            storageBucket: "soloq-challenge-5a13b.firebasestorage.app",
+            messagingSenderId: "206777469457",
+            appId: "1:206777469457:web:5945045a4d26f2c04cbfb0",
+            measurementId: "G-GZEVTXYQVP"
+        };
+
+        let app, auth, db;
+        try {
+            app = initializeApp(firebaseConfig);
+            auth = getAuth(app);
+            db = getFirestore(app);
+        } catch (error) {
+            console.error("Erreur Firebase :", error);
+        }
+
+        const RANKS = ['Unranked', 'Iron', 'Bronze', 'Silver', 'Gold', 'Platinum', 'Emerald', 'Diamond', 'Master', 'Grandmaster', 'Challenger'];
+
+        const calculateWR = (wins, losses) => {
+            const total = wins + losses;
+            if (total === 0) return 0;
+            return Math.round((wins / total) * 100);
+        };
+
+        const TIER_VALUES = {
+            'IRON': 0, 'BRONZE': 400, 'SILVER': 800, 'GOLD': 1200, 'PLATINUM': 1600,
+            'EMERALD': 2000, 'DIAMOND': 2400, 'MASTER': 2800, 'GRANDMASTER': 2800, 'CHALLENGER': 2800
+        };
+        const RANK_VALUES = { 'IV': 0, 'III': 100, 'II': 200, 'I': 300 };
+
+        const calculateAbsoluteLP = (tier, rank, lp) => {
+            const tierVal = TIER_VALUES[tier.toUpperCase()] || 0;
+            const rankVal = (['MASTER', 'GRANDMASTER', 'CHALLENGER'].includes(tier.toUpperCase())) ? 0 : (RANK_VALUES[rank.toUpperCase()] || 0);
+            return tierVal + rankVal + Number(lp);
+        };
+
+        const RankIcon = ({ rank, className = "w-10 h-10" }) => {
+            const ranksConfig = {
+                'Challenger': { wings: '#F3C25B', core: '#439FD8', inner: '#E4F4FD' },
+                'Grandmaster': { wings: '#D83131', core: '#E4E4E4', inner: '#FFFFFF' },
+                'Master': { wings: '#9840E6', core: '#E4E4E4', inner: '#FFFFFF' },
+                'Diamond': { wings: '#537BE7', core: '#91A8ED', inner: '#FFFFFF' },
+                'Emerald': { wings: '#24B25E', core: '#69D495', inner: '#FFFFFF' },
+                'Platinum': { wings: '#1BA796', core: '#5CE0D1', inner: '#FFFFFF' },
+                'Gold': { wings: '#E3B53C', core: '#F8E084', inner: '#FFFFFF' },
+                'Silver': { wings: '#8B97A2', core: '#CAD4DB', inner: '#FFFFFF' },
+                'Bronze': { wings: '#A86C45', core: '#D29B76', inner: '#FFFFFF' },
+                'Iron': { wings: '#5E6266', core: '#8F9499', inner: '#FFFFFF' },
+                'Unranked': { wings: '#333333', core: '#555555', inner: '#777777' }
+            };
+            const colors = ranksConfig[rank] || ranksConfig['Unranked'];
+            return (
+                <svg viewBox="0 0 100 100" className={`drop-shadow-md ${className}`}>
+                    <path d="M 50 85 C 10 70 5 30 10 15 C 25 35 40 45 50 50 Z" fill={colors.wings} />
+                    <path d="M 50 85 C 90 70 95 30 90 15 C 75 35 60 45 50 50 Z" fill={colors.wings} />
+                    <polygon points="50,25 75,50 50,75 25,50" fill={colors.core} />
+                    <polygon points="50,35 65,50 50,65 35,50" fill={colors.inner} />
+                </svg>
+            );
+        };
+
+        const Leaderboard = ({ players, onUpdatePlayer, isAdmin, onRequestDelete }) => {
+            const [editingId, setEditingId] = useState(null);
+            const [editForm, setEditForm] = useState({});
+
+            const sortedPlayers = useMemo(() => {
+                return [...players].sort((a, b) => (b.lpDelta || 0) - (a.lpDelta || 0));
+            }, [players]);
+
+            const handleEditClick = (player) => {
+                setEditingId(player.id);
+                setEditForm({ ...player });
+            };
+
+            const handleSaveEdit = (e, id) => {
+                e.preventDefault();
+                onUpdatePlayer(id, editForm);
+                setEditingId(null);
+            };
+
+            return (
+                <div className="space-y-6">
+                    <div className="flex items-center justify-between mb-8">
+                        <h2 className="text-2xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-yellow-400 to-yellow-600 flex items-center gap-2">
+                            <Trophy className="w-8 h-8 text-yellow-500" /> Classement actuel
+                        </h2>
+                    </div>
+
+                    <div className="bg-[#1e232d] rounded-xl border border-slate-700 shadow-2xl overflow-hidden">
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-left border-collapse min-w-[800px]">
+                                <thead>
+                                    <tr className="bg-[#181c25] text-slate-300 text-sm uppercase tracking-wider border-b border-slate-700/50">
+                                        <th className="p-4 font-semibold text-center w-16">#</th>
+                                        <th className="p-4 font-semibold">Joueur</th>
+                                        <th className="p-4 font-semibold text-left">Progression</th>
+                                        <th className="p-4 font-semibold text-center">Winrate</th>
+                                        <th className="p-4 font-semibold text-center">W/L (Total)</th>
+                                        {isAdmin && <th className="p-4 font-semibold text-center w-24">Actions</th>}
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-800">
+                                    {sortedPlayers.length === 0 && (
+                                        <tr><td colSpan="6" className="p-8 text-center text-slate-500 italic">Aucun joueur inscrit.</td></tr>
+                                    )}
+                                    {sortedPlayers.map((player, index) => {
+                                        const wr = calculateWR(player.wins || 0, player.losses || 0);
+                                        const isEditing = editingId === player.id;
+                                        let rowBg = "hover:bg-[#252b36] transition-colors";
+                                        if (index === 0) rowBg += " bg-yellow-500/5";
+                                        else if (index === 1) rowBg += " bg-slate-400/5";
+                                        else if (index === 2) rowBg += " bg-amber-700/5";
+                                        else rowBg += " bg-[#1e232d]";
+
+                                        return (
+                                            <tr key={player.id} className={rowBg}>
+                                                <td className="p-4 text-center font-bold">
+                                                    {index === 0 ? <span className="text-yellow-500 text-xl">1</span> :
+                                                     index === 1 ? <span className="text-slate-400 text-xl">2</span> :
+                                                     index === 2 ? <span className="text-amber-600 text-xl">3</span> :
+                                                     <span className="text-slate-500">{index + 1}</span>}
+                                                </td>
+                                                {isEditing ? (
+                                                    <td colSpan="5" className="p-4">
+                                                        <form onSubmit={(e) => handleSaveEdit(e, player.id)} className="bg-slate-900/80 p-5 rounded-lg border border-slate-600 grid grid-cols-1 md:grid-cols-2 gap-4">
+                                                            <div className="space-y-3">
+                                                                <h4 className="text-sm font-bold text-slate-400">Statistiques</h4>
+                                                                <input type="number" placeholder="LP gagnés" value={editForm.lpDelta} onChange={e => setEditForm({...editForm, lpDelta: Number(e.target.value)})} className="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1.5 text-white" />
+                                                                <input type="number" placeholder="Victoires" value={editForm.wins} onChange={e => setEditForm({...editForm, wins: Number(e.target.value)})} className="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1.5 text-emerald-400" />
+                                                                <input type="number" placeholder="Défaites" value={editForm.losses} onChange={e => setEditForm({...editForm, losses: Number(e.target.value)})} className="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1.5 text-red-400" />
+                                                                <select value={editForm.rank} onChange={e => setEditForm({...editForm, rank: e.target.value})} className="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1.5 text-white">
+                                                                    {RANKS.map(r => <option key={r} value={r}>{r}</option>)}
+                                                                </select>
+                                                            </div>
+                                                            <div className="space-y-3">
+                                                                <h4 className="text-sm font-bold text-slate-400">Profil & Liens</h4>
+                                                                <input type="text" placeholder="URL Image" value={editForm.profileImg || ''} onChange={e => setEditForm({...editForm, profileImg: e.target.value})} className="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1.5 text-white" />
+                                                                <input type="text" placeholder="Lien OP.GG" value={editForm.opggUrl || ''} onChange={e => setEditForm({...editForm, opggUrl: e.target.value})} className="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1.5 text-white" />
+                                                                <input type="text" placeholder="Lien Twitch" value={editForm.twitchUrl || ''} onChange={e => setEditForm({...editForm, twitchUrl: e.target.value})} className="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1.5 text-white" />
+                                                                <div className="flex justify-end gap-2 mt-4">
+                                                                    <button type="button" onClick={() => setEditingId(null)} className="px-4 py-2 bg-slate-700 rounded-lg text-white"><X size={16}/></button>
+                                                                    <button type="submit" className="px-4 py-2 bg-blue-600 rounded-lg text-white"><Check size={16}/></button>
+                                                                </div>
+                                                            </div>
+                                                        </form>
+                                                    </td>
+                                                ) : (
+                                                    <>
+                                                        <td className="p-4">
+                                                            <div className="flex flex-col">
+                                                                <span className="font-bold text-slate-100 text-lg">{player.playerName}</span>
+                                                                <span className="text-xs text-slate-400 font-mono bg-slate-900/50 px-2 py-1 rounded inline-block w-max mt-1">{player.riotId}</span>
+                                                            </div>
+                                                        </td>
+                                                        <td className="p-4">
+                                                            <div className="flex items-center gap-3 bg-[#242b38] py-1.5 px-3 rounded-lg w-max border border-slate-700/50">
+                                                                <RankIcon rank={player.rank || 'Unranked'} className="w-8 h-8" />
+                                                                <span className="text-[#a1d2e6] font-bold text-[1.15rem] min-w-[4rem]">
+                                                                    {player.lpDelta > 0 ? `+${player.lpDelta}` : player.lpDelta || 0} LP
+                                                                </span>
+                                                            </div>
+                                                        </td>
+                                                        <td className="p-4 text-center">
+                                                            <div className={`font-bold text-lg ${wr >= 50 ? 'text-emerald-400' : 'text-red-400'}`}>{wr}%</div>
+                                                            <div className="w-full bg-slate-900/80 h-1.5 rounded-full mt-1.5 overflow-hidden">
+                                                                <div className={`h-full ${wr >= 50 ? 'bg-emerald-500' : 'bg-red-500'}`} style={{ width: `${wr}%` }}></div>
+                                                            </div>
+                                                        </td>
+                                                        <td className="p-4 text-center">
+                                                            <span className="text-emerald-400 font-bold">{(player.wins || 0)}W</span>
+                                                            <span className="text-slate-500 mx-2">-</span>
+                                                            <span className="text-red-400 font-bold">{(player.losses || 0)}L</span>
+                                                        </td>
+                                                        {isAdmin && (
+                                                            <td className="p-4 text-center">
+                                                                <div className="flex justify-center gap-2">
+                                                                    <button onClick={() => handleEditClick(player)} className="p-2 text-slate-400 hover:text-blue-400 rounded-lg"><Edit2 size={18}/></button>
+                                                                    <button onClick={() => onRequestDelete(player)} className="p-2 text-slate-400 hover:text-red-400 rounded-lg"><X size={18}/></button>
+                                                                </div>
+                                                            </td>
+                                                        )}
+                                                    </>
+                                                )}
+                                            </tr>
+                                        );
+                                    })}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const PlayersList = ({ players }) => {
+            return (
+                <div className="space-y-6">
+                    <h2 className="text-2xl font-bold text-white flex items-center gap-2 mb-8"><Users className="w-8 h-8 text-blue-400" /> Joueurs</h2>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                        {players.map((player) => (
+                            <div key={player.id} className="bg-slate-800/80 backdrop-blur-sm rounded-2xl border border-slate-700 p-6 flex flex-col items-center shadow-xl hover:border-blue-500/50 transition-all">
+                                <div className="relative mb-5 mt-2">
+                                    <div className="w-28 h-28 rounded-full border-4 border-slate-700 overflow-hidden bg-slate-900 flex items-center justify-center">
+                                        {player.profileImg ? <img src={player.profileImg} className="w-full h-full object-cover" /> : <Users className="w-12 h-12 text-slate-600" />}
+                                    </div>
+                                    <div className="absolute -bottom-3 -right-3 bg-slate-900 rounded-full p-1 border border-slate-600 shadow-xl">
+                                        <RankIcon rank={player.rank || 'Unranked'} className="w-10 h-10" />
+                                    </div>
+                                </div>
+                                <h3 className="text-2xl font-black text-white">{player.playerName}</h3>
+                                <div className="text-sm text-slate-400 font-mono mb-6 bg-slate-900/80 px-4 py-1.5 rounded-full mt-3">{player.riotId}</div>
+                                <div className="flex gap-4 w-full mt-auto pt-5 border-t border-slate-700/50">
+                                    <a href={player.opggUrl || '#'} target={player.opggUrl ? "_blank" : "_self"} className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-2xl font-black text-[15px] transition-all shadow-md ${player.opggUrl ? 'bg-[#7bb3ff] text-white hover:brightness-110' : 'bg-slate-800 text-slate-600 border border-slate-700 cursor-not-allowed'}`}><Gamepad2 size={20} strokeWidth={2.5}/> OP.GG</a>
+                                    <a href={player.twitchUrl || '#'} target={player.twitchUrl ? "_blank" : "_self"} className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-2xl font-black text-[15px] transition-all shadow-md ${player.twitchUrl ? 'bg-[#ee6dff] text-white hover:brightness-110' : 'bg-slate-800 text-slate-600 border border-slate-700 cursor-not-allowed'}`}><Twitch size={20} strokeWidth={2.5}/> Twitch</a>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+        };
+
+        const AdminDashboard = ({ players, onAddPlayer, onUpdatePlayer }) => {
+            const [apiKey, setApiKey] = useState(localStorage.getItem('riotApiKey') || '');
+            const [syncStatus, setSyncStatus] = useState('');
+            const [isSyncing, setIsSyncing] = useState(false);
+            const [formData, setFormData] = useState({ playerName: '', riotId: '', rank: 'Unranked' });
+
+            const handleSyncAll = async () => {
+                if (!apiKey.trim()) return setSyncStatus("❌ Erreur : Clé Riot API manquante.");
+                setIsSyncing(true);
+                setSyncStatus("⏳ Début de la synchronisation via le serveur...");
+                
+                let success = 0, errors = [];
+                for (const player of players) {
+                    try {
+                        if (!player.riotId || !player.riotId.includes('#')) {
+                            throw new Error("Le Riot ID doit contenir un # (ex: Nom#EUW)");
+                        }
+                        const [gameName, tagLine] = player.riotId.split('#');
+                        
+                        // 1. Récupération du PUUID
+                        const accountRes = await fetch(`/api/riot?type=account&gameName=${encodeURIComponent(gameName.trim())}&tagLine=${encodeURIComponent(tagLine.trim())}&apiKey=${encodeURIComponent(apiKey.trim())}`);
+                        const accountData = await accountRes.json();
+                        if (!accountRes.ok) {
+                            throw new Error(accountData.error || `Erreur Account (${accountRes.status})`);
+                        }
+
+                        // 2. Récupération du Summoner ID & icône
+                        const summonerRes = await fetch(`/api/riot?type=summoner&value=${accountData.puuid}&apiKey=${encodeURIComponent(apiKey.trim())}`);
+                        const summonerData = await summonerRes.json();
+                        if (!summonerRes.ok) {
+                            throw new Error(summonerData.error || `Erreur Summoner (${summonerRes.status})`);
+                        }
+
+                        // 3. Récupération des entrées de rang
+                        const leagueRes = await fetch(`/api/riot?type=league&value=${summonerData.id}&apiKey=${encodeURIComponent(apiKey.trim())}`);
+                        const leagueData = await leagueRes.json();
+                        if (!leagueRes.ok) {
+                            throw new Error(leagueData.error || `Erreur League (${leagueRes.status})`);
+                        }
+
+                        const soloQ = Array.isArray(leagueData) ? leagueData.find(q => q.queueType === 'RANKED_SOLO_5x5') : null;
+                        let rankStr = 'Unranked', wins = 0, losses = 0, currentAbsLP = 0;
+                        const profileIconUrl = `https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/profile-icons/${summonerData.profileIconId}.jpg`;
+
+                        if (soloQ) {
+                            rankStr = soloQ.tier.charAt(0).toUpperCase() + soloQ.tier.slice(1).toLowerCase();
+                            wins = soloQ.wins;
+                            losses = soloQ.losses;
+                            currentAbsLP = calculateAbsoluteLP(soloQ.tier, soloQ.rank, soloQ.leaguePoints);
+                        }
+
+                        let startLP = player.startAbsoluteLP ?? currentAbsLP;
+                        
+                        await onUpdatePlayer(player.id, {
+                            rank: rankStr,
+                            wins,
+                            losses,
+                            profileImg: player.profileImg || profileIconUrl,
+                            startAbsoluteLP: startLP,
+                            currentAbsoluteLP: currentAbsLP,
+                            lpDelta: currentAbsLP - startLP
+                        });
+                        success++;
+                        await new Promise(r => setTimeout(r, 200));
+                    } catch (err) {
+                        errors.push(`- ${player.playerName}: ${err.message}`);
+                    }
+                }
+                setSyncStatus(errors.length ? `⚠️ ${success} succès, ${errors.length} erreur(s) :\n${errors.join('\n')}` : `✅ Synchronisation réussie pour ${success} joueur(s).`);
+                setIsSyncing(false);
+            };
+
+            const handleAdd = async (e) => {
+                e.preventDefault();
+                await onAddPlayer({ ...formData, lpDelta: 0, wins: 0, losses: 0 });
+                setFormData({ playerName: '', riotId: '', rank: 'Unranked' });
+            };
+
+            return (
+                <div className="space-y-12">
+                    <div className="bg-slate-800 p-8 rounded-2xl border border-blue-500/30">
+                        <h2 className="text-2xl font-black text-white flex items-center gap-3 mb-6"><Settings className="text-blue-400"/> Synchronisation auto Riot</h2>
+                        <input 
+                            type="password" 
+                            value={apiKey} 
+                            onChange={e => { setApiKey(e.target.value); localStorage.setItem('riotApiKey', e.target.value); }} 
+                            placeholder="Clé API (RGAPI-...)" 
+                            className="w-full mb-4 bg-slate-900 border border-slate-600 rounded-xl px-4 py-3 text-white" 
+                        />
+                        <button onClick={handleSyncAll} disabled={isSyncing} className="bg-blue-600 hover:bg-blue-500 text-white font-bold px-6 py-3 rounded-xl w-full transition">
+                            {isSyncing ? 'Synchronisation en cours...' : 'Synchroniser'}
+                        </button>
+                        {syncStatus && <pre className="mt-4 p-4 bg-slate-900 rounded-lg text-sm whitespace-pre-wrap">{syncStatus}</pre>}
+                    </div>
+
+                    <form onSubmit={handleAdd} className="bg-slate-800 p-8 rounded-2xl border border-slate-700">
+                        <h2 className="text-2xl font-black text-white flex items-center gap-3 mb-6"><UserPlus className="text-blue-400"/> Ajouter un joueur</h2>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <input required type="text" placeholder="Pseudo (ex: Voly)" value={formData.playerName} onChange={e => setFormData({...formData, playerName: e.target.value})} className="bg-slate-900 border border-slate-600 rounded-xl px-4 py-3 text-white" />
+                            <input required type="text" placeholder="Riot ID (ex: Voly#EUW)" value={formData.riotId} onChange={e => setFormData({...formData, riotId: e.target.value})} className="bg-slate-900 border border-slate-600 rounded-xl px-4 py-3 text-white" />
+                        </div>
+                        <button type="submit" className="mt-4 w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-3 rounded-xl transition">Inscrire</button>
+                    </form>
+                </div>
+            );
+        };
+
+        const RulesAndConfig = ({ config, onUpdateConfig, isAdmin }) => {
+            const [isEditing, setIsEditing] = useState(false);
+            const [formData, setFormData] = useState(config || {
+                startDate: '',
+                endDate: '',
+                rulesText: '1. Le joueur ayant gagné le plus de LP à la fin de la période gagne le challenge.\n2. Seules les parties en Solo/DuoQ comptent.\n3. Tout comportement toxique (ban) entraîne une disqualification.',
+                prizesText: '🏆 1ère place : 50€ RP\n🥈 2ème place : Un skin épique\n💀 Dernier : Un gage choisi par les gagnants !'
+            });
+
+            useEffect(() => {
+                if (config) setFormData(config);
+            }, [config]);
+
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                onUpdateConfig(formData);
+                setIsEditing(false);
+            };
+
+            const formatDate = (dateStr) => {
+                if (!dateStr) return 'Non définie';
+                const parts = dateStr.split('-');
+                if (parts.length === 3) return `${parts[2]}/${parts[1]}/${parts[0]}`;
+                return dateStr;
+            };
+
+            return (
+                <div className="max-w-4xl mx-auto">
+                    <div className="flex items-center justify-between mb-8">
+                        <h2 className="text-2xl font-bold text-white flex items-center gap-2">
+                            <BookOpen className="w-8 h-8 text-indigo-400" />
+                            Règlement de l'événement
+                        </h2>
+                        {isAdmin && (
+                            <button 
+                                onClick={() => setIsEditing(!isEditing)}
+                                className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-300 px-4 py-2 rounded-lg border border-slate-600 transition shadow"
+                            >
+                                {isEditing ? <><X size={18}/> Annuler</> : <><Edit2 size={18}/> Modifier</>}
+                            </button>
+                        )}
+                    </div>
+
+                    {isEditing ? (
+                        <form onSubmit={handleSubmit} className="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-xl space-y-6">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                <div>
+                                    <label className="block text-sm font-medium text-slate-300 mb-1">Date de début</label>
+                                    <input type="date" value={formData.startDate || ''} onChange={e => setFormData({...formData, startDate: e.target.value})} className="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-2 text-white" />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-slate-300 mb-1">Date de fin</label>
+                                    <input type="date" value={formData.endDate || ''} onChange={e => setFormData({...formData, endDate: e.target.value})} className="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-2 text-white" />
+                                </div>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-slate-300 mb-1">Règles du challenge</label>
+                                <textarea rows="5" value={formData.rulesText} onChange={e => setFormData({...formData, rulesText: e.target.value})} className="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-3 text-white" placeholder="Règles..." />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-slate-300 mb-1">Récompenses & Gages</label>
+                                <textarea rows="4" value={formData.prizesText} onChange={e => setFormData({...formData, prizesText: e.target.value})} className="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-3 text-white" placeholder="À gagner / À perdre..." />
+                            </div>
+                            <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition">
+                                Sauvegarder le règlement
+                            </button>
+                        </form>
+                    ) : (
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                            <div className="md:col-span-2 space-y-6">
+                                <div className="bg-slate-800 p-8 rounded-2xl border border-slate-700 shadow-xl">
+                                    <h3 className="text-xl font-bold text-indigo-400 mb-4 border-b border-slate-700 pb-3 flex items-center gap-2"><BookOpen size={20}/> Les Règles</h3>
+                                    <div className="text-slate-300 whitespace-pre-wrap leading-relaxed text-lg">
+                                        {formData.rulesText}
+                                    </div>
+                                </div>
+                                <div className="bg-slate-800 p-8 rounded-2xl border border-slate-700 shadow-xl">
+                                    <h3 className="text-xl font-bold text-yellow-400 mb-4 border-b border-slate-700 pb-3 flex items-center gap-2"><Trophy size={20}/> À gagner / À perdre</h3>
+                                    <div className="text-slate-300 whitespace-pre-wrap leading-relaxed text-lg">
+                                        {formData.prizesText}
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div className="md:col-span-1">
+                                <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-slate-700 shadow-xl">
+                                    <h3 className="text-lg font-bold text-white mb-6 flex items-center gap-2">
+                                        <Settings className="w-5 h-5 text-slate-400" /> Infos durée
+                                    </h3>
+                                    <div className="space-y-6">
+                                        <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-700/50">
+                                            <div className="text-xs text-slate-500 uppercase font-bold tracking-wider mb-1">Date de début</div>
+                                            <div className="text-xl font-semibold text-slate-200">{formatDate(formData.startDate)}</div>
+                                        </div>
+                                        <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-700/50">
+                                            <div className="text-xs text-slate-500 uppercase font-bold tracking-wider mb-1">Date de fin</div>
+                                            <div className="text-xl font-semibold text-slate-200">{formatDate(formData.endDate)}</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        const App = () => {
+            const [user, setUser] = useState(null);
+            const [activeTab, setActiveTab] = useState('leaderboard');
+            const [players, setPlayers] = useState([]);
+            const [config, setConfig] = useState(null);
+            const [isAdmin, setIsAdmin] = useState(false);
+            const [showAdminLogin, setShowAdminLogin] = useState(false);
+            const [adminPwd, setAdminPwd] = useState('');
+            const [toDelete, setToDelete] = useState(null);
+            const [dbError, setDbError] = useState(null);
+
+            useEffect(() => {
+                if (!auth) return;
+                signInAnonymously(auth).catch(err => setDbError("Erreur Auth : " + err.message));
+                onAuthStateChanged(auth, setUser);
+            }, []);
+
+            useEffect(() => {
+                if (!user || !db) return;
+                
+                const playersRef = collection(db, 'players');
+                const unsubPlayers = onSnapshot(playersRef, 
+                    (snap) => {
+                        setPlayers(snap.docs.map(d => ({id: d.id, ...d.data()})));
+                        setDbError(null);
+                    },
+                    (err) => {
+                        console.error("Firebase Error :", err);
+                        if (err.code === 'permission-denied') {
+                            setDbError("⚠️ Autorisations Firebase manquantes. Mettez à jour les règles (Rules) dans Firestore Database.");
+                        }
+                    }
+                );
+                
+                const configRef = doc(db, 'config', 'main');
+                const unsubConfig = onSnapshot(configRef, 
+                    (docSnap) => {
+                        if (docSnap.exists()) setConfig(docSnap.data());
+                    },
+                    (err) => console.error(err)
+                );
+
+                return () => { unsubPlayers(); unsubConfig(); };
+            }, [user]);
+
+            const crud = {
+                add: async (data) => addDoc(collection(db, 'players'), data),
+                update: async (id, data) => updateDoc(doc(db, 'players', id), data),
+                del: async (id) => deleteDoc(doc(db, 'players', id)),
+                updateConfig: async (data) => setDoc(doc(db, 'config', 'main'), data, { merge: true })
+            };
+
+            return (
+                <div className="min-h-screen bg-[#0f1219] text-slate-200 font-sans selection:bg-blue-500/30">
+                    <nav className="bg-[#151921] border-b border-slate-800/80 sticky top-0 z-50 p-4">
+                        <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4">
+                            <h1 className="text-2xl font-black text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-400">SOLOQ CHALLENGE</h1>
+                            <div className="flex gap-2 bg-slate-900/80 p-1.5 rounded-xl border border-slate-700/50">
+                                <button onClick={() => setActiveTab('leaderboard')} className={`px-4 py-2 rounded-lg text-sm font-bold ${activeTab === 'leaderboard' ? 'bg-slate-700 text-white' : 'text-slate-400'}`}>Classement</button>
+                                <button onClick={() => setActiveTab('players')} className={`px-4 py-2 rounded-lg text-sm font-bold ${activeTab === 'players' ? 'bg-slate-700 text-white' : 'text-slate-400'}`}>Joueurs</button>
+                                <button onClick={() => setActiveTab('rules')} className={`px-4 py-2 rounded-lg text-sm font-bold ${activeTab === 'rules' ? 'bg-slate-700 text-white' : 'text-slate-400'}`}>Règlement</button>
+                                {isAdmin && <button onClick={() => setActiveTab('admin')} className={`px-4 py-2 rounded-lg text-sm font-bold ${activeTab === 'admin' ? 'bg-slate-700 text-white' : 'text-slate-400'}`}>Admin</button>}
+                                <div className="w-px bg-slate-700 mx-2"></div>
+                                {isAdmin ? 
+                                    <button onClick={() => {setIsAdmin(false); setActiveTab('leaderboard')}} className="px-4 py-2 rounded-lg text-sm font-bold text-red-400">Quitter</button> : 
+                                    <button onClick={() => setShowAdminLogin(true)} className="px-4 py-2 rounded-lg text-sm font-bold text-slate-400"><Lock size={16}/></button>}
+                            </div>
+                        </div>
+                    </nav>
+
+                    <main className="max-w-7xl mx-auto p-4 py-10">
+                        {dbError && (
+                            <div className="mb-8 bg-red-500/10 border border-red-500/50 p-4 rounded-xl flex items-center gap-4 text-red-200">
+                                <AlertTriangle className="text-red-500 w-8 h-8 shrink-0" />
+                                <div>
+                                    <h3 className="font-bold text-lg text-red-400">Accès à la base de données refusé</h3>
+                                    <p className="text-sm">{dbError}</p>
+                                </div>
+                            </div>
+                        )}
+                        {activeTab === 'leaderboard' && <Leaderboard players={players} onUpdatePlayer={crud.update} isAdmin={isAdmin} onRequestDelete={setToDelete} />}
+                        {activeTab === 'players' && <PlayersList players={players} />}
+                        {activeTab === 'rules' && <RulesAndConfig config={config} onUpdateConfig={crud.updateConfig} isAdmin={isAdmin} />}
+                        {activeTab === 'admin' && isAdmin && <AdminDashboard players={players} onAddPlayer={crud.add} onUpdatePlayer={crud.update} />}
+                    </main>
+
+                    {showAdminLogin && (
+                        <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
+                            <div className="bg-slate-800 p-6 rounded-2xl w-full max-w-sm border border-slate-600">
+                                <div className="flex justify-between mb-4"><h3 className="text-xl font-bold">Admin</h3><button onClick={() => setShowAdminLogin(false)}><X/></button></div>
+                                <input type="password" value={adminPwd} onChange={e=>setAdminPwd(e.target.value)} placeholder="Mot de passe" className="w-full bg-slate-900 border border-slate-600 rounded-xl px-4 py-3 mb-4 text-white" />
+                                <button onClick={() => {if(adminPwd==='Hussein180690'){setIsAdmin(true);setShowAdminLogin(false);setAdminPwd('');}}} className="w-full bg-blue-600 py-3 rounded-xl font-bold">Valider</button>
+                            </div>
+                        </div>
+                    )}
+
+                    {toDelete && (
+                        <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
+                            <div className="bg-slate-800 p-6 rounded-2xl w-full max-w-sm border border-slate-600 text-center">
+                                <h3 className="text-xl font-bold mb-4">Supprimer {toDelete.playerName} ?</h3>
+                                <div className="flex justify-center gap-4">
+                                    <button onClick={() => setToDelete(null)} className="px-4 py-2 bg-slate-700 rounded-xl">Annuler</button>
+                                    <button onClick={() => {crud.del(toDelete.id); setToDelete(null);}} className="px-4 py-2 bg-red-600 rounded-xl">Supprimer</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        const root = createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
