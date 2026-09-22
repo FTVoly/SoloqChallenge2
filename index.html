@@ -3,15 +3,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SoloQ Challenge</title>
+    <title>SoloQ Challenge — Leaderboard Officiel</title>
     
-    <!-- Tailwind CSS pour le design -->
+    <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     
-    <!-- Babel pour lire le code React directement dans le navigateur -->
+    <!-- Babel pour le JSX -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-    <!-- Import Map pour charger React, les icônes et Firebase -->
+    <!-- Import Map -->
     <script type="importmap">
     {
         "imports": {
@@ -26,22 +26,49 @@
     </script>
 
     <style>
+        @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700;800&family=Inter:wght@400;500;600;700&display=swap');
+        
         body { 
-            background-color: #0f1219; 
+            background: #090c12;
             color: #e2e8f0; 
-            font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; 
+            font-family: 'Inter', sans-serif; 
+            background-image: 
+                radial-gradient(circle at 50% 0%, rgba(120, 58, 240, 0.12) 0%, transparent 45%),
+                radial-gradient(circle at 10% 20%, rgba(37, 99, 235, 0.08) 0%, transparent 40%);
+            background-attachment: fixed;
         }
-        .hide-scrollbar::-webkit-scrollbar { display: none; }
-        .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        
+        h1, h2, h3, .font-heading {
+            font-family: 'Rajdhani', sans-serif;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+
+        .gold-glow {
+            box-shadow: 0 0 25px rgba(234, 179, 8, 0.25);
+            border-color: rgba(234, 179, 8, 0.5);
+        }
+        .silver-glow {
+            box-shadow: 0 0 20px rgba(148, 163, 184, 0.2);
+            border-color: rgba(148, 163, 184, 0.4);
+        }
+        .bronze-glow {
+            box-shadow: 0 0 20px rgba(217, 119, 6, 0.2);
+            border-color: rgba(217, 119, 6, 0.4);
+        }
     </style>
 </head>
-<body>
+<body class="min-h-screen">
     <div id="root"></div>
 
     <script type="text/babel" data-type="module">
         import React, { useState, useEffect, useMemo } from 'react';
         import { createRoot } from 'react-dom/client';
-        import { Trophy, Swords, BookOpen, UserPlus, Settings, Edit2, ChevronDown, Check, X, Users, Twitch, ExternalLink, Gamepad2, Image as ImageIcon, Lock, Unlock, AlertTriangle } from 'lucide-react';
+        import { 
+            Trophy, Swords, Flame, ShieldAlert, Award, Clock, Users, 
+            ExternalLink, Settings, UserPlus, Edit2, Check, X, Lock, 
+            Twitch, Gamepad2, ArrowUpRight, ChevronRight, Sparkles 
+        } from 'lucide-react';
         import { initializeApp } from 'firebase/app';
         import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
         import { getFirestore, doc, setDoc, onSnapshot, collection, addDoc, updateDoc, deleteDoc } from 'firebase/firestore';
@@ -61,17 +88,11 @@
             app = initializeApp(firebaseConfig);
             auth = getAuth(app);
             db = getFirestore(app);
-        } catch (error) {
-            console.error("Erreur Firebase :", error);
+        } catch (e) {
+            console.error(e);
         }
 
         const RANKS = ['Unranked', 'Iron', 'Bronze', 'Silver', 'Gold', 'Platinum', 'Emerald', 'Diamond', 'Master', 'Grandmaster', 'Challenger'];
-
-        const calculateWR = (wins, losses) => {
-            const total = wins + losses;
-            if (total === 0) return 0;
-            return Math.round((wins / total) * 100);
-        };
 
         const TIER_VALUES = {
             'IRON': 0, 'BRONZE': 400, 'SILVER': 800, 'GOLD': 1200, 'PLATINUM': 1600,
@@ -85,152 +106,235 @@
             return tierVal + rankVal + Number(lp);
         };
 
-        const RankIcon = ({ rank, className = "w-10 h-10" }) => {
-            const ranksConfig = {
-                'Challenger': { wings: '#F3C25B', core: '#439FD8', inner: '#E4F4FD' },
-                'Grandmaster': { wings: '#D83131', core: '#E4E4E4', inner: '#FFFFFF' },
-                'Master': { wings: '#9840E6', core: '#E4E4E4', inner: '#FFFFFF' },
-                'Diamond': { wings: '#537BE7', core: '#91A8ED', inner: '#FFFFFF' },
-                'Emerald': { wings: '#24B25E', core: '#69D495', inner: '#FFFFFF' },
-                'Platinum': { wings: '#1BA796', core: '#5CE0D1', inner: '#FFFFFF' },
-                'Gold': { wings: '#E3B53C', core: '#F8E084', inner: '#FFFFFF' },
-                'Silver': { wings: '#8B97A2', core: '#CAD4DB', inner: '#FFFFFF' },
-                'Bronze': { wings: '#A86C45', core: '#D29B76', inner: '#FFFFFF' },
-                'Iron': { wings: '#5E6266', core: '#8F9499', inner: '#FFFFFF' },
-                'Unranked': { wings: '#333333', core: '#555555', inner: '#777777' }
+        const calculateWR = (wins, losses) => {
+            const total = wins + losses;
+            return total === 0 ? 0 : Math.round((wins / total) * 100);
+        };
+
+        const RankBadge = ({ rank = 'Unranked' }) => {
+            const colors = {
+                Challenger: 'bg-amber-400/10 text-amber-300 border-amber-400/40',
+                Grandmaster: 'bg-red-500/10 text-red-400 border-red-500/40',
+                Master: 'bg-purple-500/10 text-purple-300 border-purple-500/40',
+                Diamond: 'bg-blue-400/10 text-blue-300 border-blue-400/40',
+                Emerald: 'bg-emerald-400/10 text-emerald-300 border-emerald-400/40',
+                Platinum: 'bg-teal-400/10 text-teal-300 border-teal-400/40',
+                Gold: 'bg-yellow-500/10 text-yellow-300 border-yellow-500/40',
+                Silver: 'bg-slate-300/10 text-slate-300 border-slate-300/40',
+                Bronze: 'bg-amber-700/10 text-amber-500 border-amber-700/40',
+                Iron: 'bg-zinc-500/10 text-zinc-400 border-zinc-500/40',
+                Unranked: 'bg-slate-800 text-slate-500 border-slate-700'
             };
-            const colors = ranksConfig[rank] || ranksConfig['Unranked'];
+            const style = colors[rank] || colors['Unranked'];
             return (
-                <svg viewBox="0 0 100 100" className={`drop-shadow-md ${className}`}>
-                    <path d="M 50 85 C 10 70 5 30 10 15 C 25 35 40 45 50 50 Z" fill={colors.wings} />
-                    <path d="M 50 85 C 90 70 95 30 90 15 C 75 35 60 45 50 50 Z" fill={colors.wings} />
-                    <polygon points="50,25 75,50 50,75 25,50" fill={colors.core} />
-                    <polygon points="50,35 65,50 50,65 35,50" fill={colors.inner} />
-                </svg>
+                <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold font-heading uppercase tracking-wider border ${style}`}>
+                    {rank}
+                </span>
+            );
+        };
+
+        const Countdown = ({ targetDate }) => {
+            const [timeLeft, setTimeLeft] = useState({ j: 0, h: 0, m: 0, s: 0 });
+
+            useEffect(() => {
+                if (!targetDate) return;
+                const update = () => {
+                    const diff = new Date(targetDate).getTime() - new Date().getTime();
+                    if (diff <= 0) {
+                        setTimeLeft({ j: 0, h: 0, m: 0, s: 0 });
+                        return;
+                    }
+                    setTimeLeft({
+                        j: Math.floor(diff / (1000 * 60 * 60 * 24)),
+                        h: Math.floor((diff / (1000 * 60 * 60)) % 24),
+                        m: Math.floor((diff / (1000 * 60)) % 60),
+                        s: Math.floor((diff / 1000) % 60)
+                    });
+                };
+                update();
+                const timer = setInterval(update, 1000);
+                return () => clearInterval(timer);
+            }, [targetDate]);
+
+            return (
+                <div className="flex gap-2 text-center">
+                    {[
+                        { label: 'J', val: timeLeft.j },
+                        { label: 'H', val: timeLeft.h },
+                        { label: 'M', val: timeLeft.m },
+                        { label: 'S', val: timeLeft.s }
+                    ].map((item, idx) => (
+                        <div key={idx} className="bg-slate-900/80 border border-slate-800 rounded-lg px-2.5 py-1.5 min-w-[42px]">
+                            <div className="text-lg font-bold font-heading text-purple-400 leading-tight">{String(item.val).padStart(2, '0')}</div>
+                            <div className="text-[10px] text-slate-500 font-semibold">{item.label}</div>
+                        </div>
+                    ))}
+                </div>
+            );
+        };
+
+        const Podium = ({ top3 }) => {
+            if (!top3 || top3.length === 0) return null;
+            const [first, second, third] = top3;
+
+            const renderCard = (player, place, glowClass, crownColor) => {
+                if (!player) return null;
+                const wr = calculateWR(player.wins || 0, player.losses || 0);
+                return (
+                    <div className={`relative bg-gradient-to-b from-[#161c28] to-[#0f131c] rounded-2xl p-5 border flex flex-col items-center ${glowClass} transition-transform hover:-translate-y-1`}>
+                        <div className={`absolute -top-3.5 px-3 py-0.5 rounded-full text-xs font-bold font-heading uppercase tracking-wider flex items-center gap-1 ${crownColor}`}>
+                            <Trophy size={13} /> {place}
+                        </div>
+                        <div className="relative mt-3 mb-3">
+                            <img 
+                                src={player.profileImg || 'https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/profile-icons/29.jpg'} 
+                                alt={player.playerName}
+                                className="w-20 h-20 rounded-full object-cover border-2 border-slate-700 shadow-lg"
+                            />
+                            <div className="absolute -bottom-1 -right-1">
+                                <RankBadge rank={player.rank} />
+                            </div>
+                        </div>
+                        <h4 className="font-heading text-xl font-bold text-white tracking-wide">{player.playerName}</h4>
+                        <span className="text-xs font-mono text-slate-400 mb-3">{player.riotId}</span>
+                        <div className="text-2xl font-black font-heading text-yellow-400 mb-2">
+                            {player.lpDelta > 0 ? `+${player.lpDelta}` : player.lpDelta || 0} <span className="text-sm font-semibold text-slate-400">LP</span>
+                        </div>
+                        <div className="w-full pt-3 border-t border-slate-800 flex justify-between text-xs text-slate-400">
+                            <span>{player.wins || 0}V - {player.losses || 0}D</span>
+                            <span className={wr >= 50 ? 'text-emerald-400 font-bold' : 'text-red-400 font-bold'}>{wr}% WR</span>
+                        </div>
+                    </div>
+                );
+            };
+
+            return (
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-10 items-end">
+                    <div className="order-2 md:order-1">{renderCard(second, '2e place', 'silver-glow border-slate-500/40', 'bg-slate-300 text-slate-950')}</div>
+                    <div className="order-1 md:order-2 -mt-4">{renderCard(first, '1ère place', 'gold-glow border-yellow-500/50 scale-105', 'bg-yellow-400 text-yellow-950 shadow-lg')}</div>
+                    <div className="order-3 md:order-3">{renderCard(third, '3e place', 'bronze-glow border-amber-700/40', 'bg-amber-600 text-white')}</div>
+                </div>
             );
         };
 
         const Leaderboard = ({ players, onUpdatePlayer, isAdmin, onRequestDelete }) => {
             const [editingId, setEditingId] = useState(null);
             const [editForm, setEditForm] = useState({});
+            const [search, setSearch] = useState('');
 
-            const sortedPlayers = useMemo(() => {
+            const sorted = useMemo(() => {
                 return [...players].sort((a, b) => (b.lpDelta || 0) - (a.lpDelta || 0));
             }, [players]);
 
-            const handleEditClick = (player) => {
-                setEditingId(player.id);
-                setEditForm({ ...player });
-            };
+            const filtered = useMemo(() => {
+                return sorted.filter(p => 
+                    p.playerName.toLowerCase().includes(search.toLowerCase()) || 
+                    p.riotId.toLowerCase().includes(search.toLowerCase())
+                );
+            }, [sorted, search]);
 
-            const handleSaveEdit = (e, id) => {
-                e.preventDefault();
-                onUpdatePlayer(id, editForm);
-                setEditingId(null);
-            };
+            const top3 = sorted.slice(0, 3);
 
             return (
                 <div className="space-y-6">
-                    <div className="flex items-center justify-between mb-8">
-                        <h2 className="text-2xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-yellow-400 to-yellow-600 flex items-center gap-2">
-                            <Trophy className="w-8 h-8 text-yellow-500" /> Classement actuel
-                        </h2>
+                    <Podium top3={top3} />
+
+                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                        <div>
+                            <h2 className="text-2xl font-bold font-heading text-white flex items-center gap-2">
+                                <Flame className="text-orange-500" /> Classement en direct
+                            </h2>
+                            <p className="text-xs text-slate-400 mt-0.5">Trié selon la progression absolue en LP depuis le coup d'envoi.</p>
+                        </div>
+                        <input 
+                            type="text" 
+                            placeholder="Rechercher un streamer / joueur..." 
+                            value={search}
+                            onChange={e => setSearch(e.target.value)}
+                            className="bg-[#121722] border border-slate-700/70 rounded-xl px-4 py-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-purple-500 w-full sm:w-64"
+                        />
                     </div>
 
-                    <div className="bg-[#1e232d] rounded-xl border border-slate-700 shadow-2xl overflow-hidden">
+                    <div className="bg-[#10141d]/90 rounded-2xl border border-slate-800 shadow-2xl overflow-hidden backdrop-blur-sm">
                         <div className="overflow-x-auto">
-                            <table className="w-full text-left border-collapse min-w-[800px]">
+                            <table className="w-full text-left border-collapse min-w-[760px]">
                                 <thead>
-                                    <tr className="bg-[#181c25] text-slate-300 text-sm uppercase tracking-wider border-b border-slate-700/50">
-                                        <th className="p-4 font-semibold text-center w-16">#</th>
-                                        <th className="p-4 font-semibold">Joueur</th>
-                                        <th className="p-4 font-semibold text-left">Progression</th>
-                                        <th className="p-4 font-semibold text-center">Winrate</th>
-                                        <th className="p-4 font-semibold text-center">W/L (Total)</th>
-                                        {isAdmin && <th className="p-4 font-semibold text-center w-24">Actions</th>}
+                                    <tr className="bg-[#0b0e15] text-[11px] font-heading uppercase text-slate-400 border-b border-slate-800 tracking-wider">
+                                        <th className="py-4 px-4 text-center w-14">#</th>
+                                        <th className="py-4 px-4">Participant</th>
+                                        <th className="py-4 px-4">Rang actuel</th>
+                                        <th className="py-4 px-4 text-center">Score SoloQ</th>
+                                        <th className="py-4 px-4 text-center">Winrate</th>
+                                        <th className="py-4 px-4 text-center">Bilan V / D</th>
+                                        {isAdmin && <th className="py-4 px-4 text-center w-20">Admin</th>}
                                     </tr>
                                 </thead>
-                                <tbody className="divide-y divide-slate-800">
-                                    {sortedPlayers.length === 0 && (
-                                        <tr><td colSpan="6" className="p-8 text-center text-slate-500 italic">Aucun joueur inscrit.</td></tr>
+                                <tbody className="divide-y divide-slate-800/60 text-sm">
+                                    {filtered.length === 0 && (
+                                        <tr><td colSpan="7" className="py-12 text-center text-slate-500 italic">Aucun participant ne correspond à la recherche.</td></tr>
                                     )}
-                                    {sortedPlayers.map((player, index) => {
+                                    {filtered.map((player, idx) => {
+                                        const rankIndex = sorted.findIndex(p => p.id === player.id);
                                         const wr = calculateWR(player.wins || 0, player.losses || 0);
                                         const isEditing = editingId === player.id;
-                                        let rowBg = "hover:bg-[#252b36] transition-colors";
-                                        if (index === 0) rowBg += " bg-yellow-500/5";
-                                        else if (index === 1) rowBg += " bg-slate-400/5";
-                                        else if (index === 2) rowBg += " bg-amber-700/5";
-                                        else rowBg += " bg-[#1e232d]";
 
                                         return (
-                                            <tr key={player.id} className={rowBg}>
-                                                <td className="p-4 text-center font-bold">
-                                                    {index === 0 ? <span className="text-yellow-500 text-xl">1</span> :
-                                                     index === 1 ? <span className="text-slate-400 text-xl">2</span> :
-                                                     index === 2 ? <span className="text-amber-600 text-xl">3</span> :
-                                                     <span className="text-slate-500">{index + 1}</span>}
+                                            <tr key={player.id} className="hover:bg-slate-800/30 transition-colors">
+                                                <td className="py-3.5 px-4 text-center font-heading font-bold text-base">
+                                                    {rankIndex === 0 ? <span className="text-yellow-400">1</span> :
+                                                     rankIndex === 1 ? <span className="text-slate-300">2</span> :
+                                                     rankIndex === 2 ? <span className="text-amber-600">3</span> :
+                                                     <span className="text-slate-500">{rankIndex + 1}</span>}
                                                 </td>
-                                                {isEditing ? (
-                                                    <td colSpan="5" className="p-4">
-                                                        <form onSubmit={(e) => handleSaveEdit(e, player.id)} className="bg-slate-900/80 p-5 rounded-lg border border-slate-600 grid grid-cols-1 md:grid-cols-2 gap-4">
-                                                            <div className="space-y-3">
-                                                                <h4 className="text-sm font-bold text-slate-400">Statistiques</h4>
-                                                                <input type="number" placeholder="LP gagnés" value={editForm.lpDelta} onChange={e => setEditForm({...editForm, lpDelta: Number(e.target.value)})} className="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1.5 text-white" />
-                                                                <input type="number" placeholder="Victoires" value={editForm.wins} onChange={e => setEditForm({...editForm, wins: Number(e.target.value)})} className="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1.5 text-emerald-400" />
-                                                                <input type="number" placeholder="Défaites" value={editForm.losses} onChange={e => setEditForm({...editForm, losses: Number(e.target.value)})} className="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1.5 text-red-400" />
-                                                                <select value={editForm.rank} onChange={e => setEditForm({...editForm, rank: e.target.value})} className="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1.5 text-white">
-                                                                    {RANKS.map(r => <option key={r} value={r}>{r}</option>)}
-                                                                </select>
+                                                <td className="py-3.5 px-4">
+                                                    <div className="flex items-center gap-3">
+                                                        <img 
+                                                            src={player.profileImg || 'https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/profile-icons/29.jpg'} 
+                                                            className="w-10 h-10 rounded-full object-cover border border-slate-700" 
+                                                            alt=""
+                                                        />
+                                                        <div>
+                                                            <div className="font-bold text-slate-100 flex items-center gap-2">
+                                                                {player.playerName}
+                                                                {player.twitchUrl && (
+                                                                    <a href={player.twitchUrl} target="_blank" rel="noreferrer" className="text-purple-400 hover:text-purple-300">
+                                                                        <Twitch size={13} />
+                                                                    </a>
+                                                                )}
                                                             </div>
-                                                            <div className="space-y-3">
-                                                                <h4 className="text-sm font-bold text-slate-400">Profil & Liens</h4>
-                                                                <input type="text" placeholder="URL Image" value={editForm.profileImg || ''} onChange={e => setEditForm({...editForm, profileImg: e.target.value})} className="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1.5 text-white" />
-                                                                <input type="text" placeholder="Lien OP.GG" value={editForm.opggUrl || ''} onChange={e => setEditForm({...editForm, opggUrl: e.target.value})} className="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1.5 text-white" />
-                                                                <input type="text" placeholder="Lien Twitch" value={editForm.twitchUrl || ''} onChange={e => setEditForm({...editForm, twitchUrl: e.target.value})} className="w-full bg-slate-800 border border-slate-600 rounded px-3 py-1.5 text-white" />
-                                                                <div className="flex justify-end gap-2 mt-4">
-                                                                    <button type="button" onClick={() => setEditingId(null)} className="px-4 py-2 bg-slate-700 rounded-lg text-white"><X size={16}/></button>
-                                                                    <button type="submit" className="px-4 py-2 bg-blue-600 rounded-lg text-white"><Check size={16}/></button>
-                                                                </div>
-                                                            </div>
-                                                        </form>
+                                                            <div className="text-xs font-mono text-slate-400">{player.riotId}</div>
+                                                        </div>
+                                                    </div>
+                                                </td>
+                                                <td className="py-3.5 px-4">
+                                                    <RankBadge rank={player.rank} />
+                                                </td>
+                                                <td className="py-3.5 px-4 text-center">
+                                                    <span className={`font-heading font-bold text-lg ${player.lpDelta >= 0 ? 'text-yellow-400' : 'text-red-400'}`}>
+                                                        {player.lpDelta > 0 ? `+${player.lpDelta}` : player.lpDelta || 0} LP
+                                                    </span>
+                                                </td>
+                                                <td className="py-3.5 px-4">
+                                                    <div className="max-w-[120px] mx-auto text-center">
+                                                        <span className={`text-xs font-bold ${wr >= 50 ? 'text-emerald-400' : 'text-red-400'}`}>{wr}%</span>
+                                                        <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden mt-1">
+                                                            <div className={`h-full ${wr >= 50 ? 'bg-emerald-500' : 'bg-red-500'}`} style={{ width: `${wr}%` }}></div>
+                                                        </div>
+                                                    </div>
+                                                </td>
+                                                <td className="py-3.5 px-4 text-center font-medium text-xs">
+                                                    <span className="text-emerald-400 font-bold">{player.wins || 0}V</span>
+                                                    <span className="text-slate-600 mx-1.5">/</span>
+                                                    <span className="text-red-400 font-bold">{player.losses || 0}D</span>
+                                                </td>
+                                                {isAdmin && (
+                                                    <td className="py-3.5 px-4 text-center">
+                                                        <div className="flex justify-center gap-1">
+                                                            <button onClick={() => onRequestDelete(player)} className="p-1.5 text-slate-500 hover:text-red-400 transition">
+                                                                <X size={15} />
+                                                            </button>
+                                                        </div>
                                                     </td>
-                                                ) : (
-                                                    <>
-                                                        <td className="p-4">
-                                                            <div className="flex flex-col">
-                                                                <span className="font-bold text-slate-100 text-lg">{player.playerName}</span>
-                                                                <span className="text-xs text-slate-400 font-mono bg-slate-900/50 px-2 py-1 rounded inline-block w-max mt-1">{player.riotId}</span>
-                                                            </div>
-                                                        </td>
-                                                        <td className="p-4">
-                                                            <div className="flex items-center gap-3 bg-[#242b38] py-1.5 px-3 rounded-lg w-max border border-slate-700/50">
-                                                                <RankIcon rank={player.rank || 'Unranked'} className="w-8 h-8" />
-                                                                <span className="text-[#a1d2e6] font-bold text-[1.15rem] min-w-[4rem]">
-                                                                    {player.lpDelta > 0 ? `+${player.lpDelta}` : player.lpDelta || 0} LP
-                                                                </span>
-                                                            </div>
-                                                        </td>
-                                                        <td className="p-4 text-center">
-                                                            <div className={`font-bold text-lg ${wr >= 50 ? 'text-emerald-400' : 'text-red-400'}`}>{wr}%</div>
-                                                            <div className="w-full bg-slate-900/80 h-1.5 rounded-full mt-1.5 overflow-hidden">
-                                                                <div className={`h-full ${wr >= 50 ? 'bg-emerald-500' : 'bg-red-500'}`} style={{ width: `${wr}%` }}></div>
-                                                            </div>
-                                                        </td>
-                                                        <td className="p-4 text-center">
-                                                            <span className="text-emerald-400 font-bold">{(player.wins || 0)}W</span>
-                                                            <span className="text-slate-500 mx-2">-</span>
-                                                            <span className="text-red-400 font-bold">{(player.losses || 0)}L</span>
-                                                        </td>
-                                                        {isAdmin && (
-                                                            <td className="p-4 text-center">
-                                                                <div className="flex justify-center gap-2">
-                                                                    <button onClick={() => handleEditClick(player)} className="p-2 text-slate-400 hover:text-blue-400 rounded-lg"><Edit2 size={18}/></button>
-                                                                    <button onClick={() => onRequestDelete(player)} className="p-2 text-slate-400 hover:text-red-400 rounded-lg"><X size={18}/></button>
-                                                                </div>
-                                                            </td>
-                                                        )}
-                                                    </>
                                                 )}
                                             </tr>
                                         );
@@ -246,74 +350,139 @@
         const PlayersList = ({ players }) => {
             return (
                 <div className="space-y-6">
-                    <h2 className="text-2xl font-bold text-white flex items-center gap-2 mb-8"><Users className="w-8 h-8 text-blue-400" /> Joueurs</h2>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-                        {players.map((player) => (
-                            <div key={player.id} className="bg-slate-800/80 backdrop-blur-sm rounded-2xl border border-slate-700 p-6 flex flex-col items-center shadow-xl hover:border-blue-500/50 transition-all">
-                                <div className="relative mb-5 mt-2">
-                                    <div className="w-28 h-28 rounded-full border-4 border-slate-700 overflow-hidden bg-slate-900 flex items-center justify-center">
-                                        {player.profileImg ? <img src={player.profileImg} className="w-full h-full object-cover" /> : <Users className="w-12 h-12 text-slate-600" />}
+                    <div>
+                        <h2 className="text-2xl font-bold font-heading text-white flex items-center gap-2">
+                            <Users className="text-purple-400" /> Les Participants ({players.length})
+                        </h2>
+                        <p className="text-xs text-slate-400 mt-0.5">Accède directement aux profils OP.GG et aux chaînes Twitch officielles.</p>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
+                        {players.map(player => {
+                            const wr = calculateWR(player.wins || 0, player.losses || 0);
+                            return (
+                                <div key={player.id} className="bg-[#111622] border border-slate-800 rounded-2xl p-5 hover:border-purple-500/40 transition-all flex flex-col justify-between">
+                                    <div>
+                                        <div className="flex items-start justify-between mb-4">
+                                            <div className="flex items-center gap-3">
+                                                <img 
+                                                    src={player.profileImg || 'https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/profile-icons/29.jpg'} 
+                                                    alt="" 
+                                                    className="w-14 h-14 rounded-full object-cover border-2 border-slate-700"
+                                                />
+                                                <div>
+                                                    <h3 className="font-heading text-xl font-bold text-white">{player.playerName}</h3>
+                                                    <span className="text-xs font-mono text-slate-400">{player.riotId}</span>
+                                                </div>
+                                            </div>
+                                            <RankBadge rank={player.rank} />
+                                        </div>
+
+                                        <div className="grid grid-cols-2 gap-2 bg-[#0b0e15] p-3 rounded-xl border border-slate-800/80 mb-4 text-center">
+                                            <div>
+                                                <div className="text-[10px] text-slate-500 uppercase font-heading">Progression</div>
+                                                <div className="font-heading text-lg font-bold text-yellow-400">
+                                                    {player.lpDelta > 0 ? `+${player.lpDelta}` : player.lpDelta || 0} LP
+                                                </div>
+                                            </div>
+                                            <div>
+                                                <div className="text-[10px] text-slate-500 uppercase font-heading">Ratio V/D</div>
+                                                <div className="font-heading text-lg font-bold text-slate-200">
+                                                    {player.wins || 0}W <span className="text-xs text-slate-500 font-normal">/</span> {player.losses || 0}L
+                                                </div>
+                                            </div>
+                                        </div>
                                     </div>
-                                    <div className="absolute -bottom-3 -right-3 bg-slate-900 rounded-full p-1 border border-slate-600 shadow-xl">
-                                        <RankIcon rank={player.rank || 'Unranked'} className="w-10 h-10" />
+
+                                    <div className="flex gap-2">
+                                        <a 
+                                            href={`https://www.op.gg/summoners/euw/${encodeURIComponent(player.riotId.replace('#', '-'))}`} 
+                                            target="_blank" 
+                                            rel="noreferrer"
+                                            className="flex-1 bg-blue-600/10 hover:bg-blue-600/20 text-blue-400 border border-blue-500/30 rounded-xl py-2 px-3 text-xs font-bold font-heading flex items-center justify-center gap-1.5 transition"
+                                        >
+                                            <Gamepad2 size={14} /> OP.GG
+                                        </a>
+                                        {player.twitchUrl && (
+                                            <a 
+                                                href={player.twitchUrl} 
+                                                target="_blank" 
+                                                rel="noreferrer"
+                                                className="flex-1 bg-purple-600/10 hover:bg-purple-600/20 text-purple-300 border border-purple-500/30 rounded-xl py-2 px-3 text-xs font-bold font-heading flex items-center justify-center gap-1.5 transition"
+                                            >
+                                                <Twitch size={14} /> Twitch
+                                            </a>
+                                        )}
                                     </div>
                                 </div>
-                                <h3 className="text-2xl font-black text-white">{player.playerName}</h3>
-                                <div className="text-sm text-slate-400 font-mono mb-6 bg-slate-900/80 px-4 py-1.5 rounded-full mt-3">{player.riotId}</div>
-                                <div className="flex gap-4 w-full mt-auto pt-5 border-t border-slate-700/50">
-                                    <a href={player.opggUrl || '#'} target={player.opggUrl ? "_blank" : "_self"} className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-2xl font-black text-[15px] transition-all shadow-md ${player.opggUrl ? 'bg-[#7bb3ff] text-white hover:brightness-110' : 'bg-slate-800 text-slate-600 border border-slate-700 cursor-not-allowed'}`}><Gamepad2 size={20} strokeWidth={2.5}/> OP.GG</a>
-                                    <a href={player.twitchUrl || '#'} target={player.twitchUrl ? "_blank" : "_self"} className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-2xl font-black text-[15px] transition-all shadow-md ${player.twitchUrl ? 'bg-[#ee6dff] text-white hover:brightness-110' : 'bg-slate-800 text-slate-600 border border-slate-700 cursor-not-allowed'}`}><Twitch size={20} strokeWidth={2.5}/> Twitch</a>
-                                </div>
-                            </div>
-                        ))}
+                            );
+                        })}
                     </div>
                 </div>
             );
         };
 
-        const AdminDashboard = ({ players, onAddPlayer, onUpdatePlayer }) => {
+        const RulesView = ({ config }) => {
+            return (
+                <div className="max-w-4xl mx-auto space-y-6">
+                    <div className="text-center mb-8">
+                        <h2 className="text-3xl font-black font-heading text-white tracking-wide">Règlement officiel</h2>
+                        <p className="text-slate-400 text-sm mt-1">Modalités, conditions de victoire et dotations du tournoi.</p>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div className="bg-[#111622] p-6 rounded-2xl border border-slate-800">
+                            <h3 className="font-heading text-lg font-bold text-purple-400 flex items-center gap-2 mb-3">
+                                <Award size={18} /> Règles de la course
+                            </h3>
+                            <div className="text-slate-300 text-sm whitespace-pre-wrap leading-relaxed">
+                                {config?.rulesText || "1. SoloQ uniquement en file classée 5v5.\n2. Le vainqueur est celui ayant cumulé le plus de LP nets.\n3. Fair-play obligatoire, tout comportement sanctionné par Riot entraîne la disqualification."}
+                            </div>
+                        </div>
+
+                        <div className="bg-[#111622] p-6 rounded-2xl border border-slate-800">
+                            <h3 className="font-heading text-lg font-bold text-yellow-400 flex items-center gap-2 mb-3">
+                                <Trophy size={18} /> Récompenses & Gages
+                            </h3>
+                            <div className="text-slate-300 text-sm whitespace-pre-wrap leading-relaxed">
+                                {config?.prizesText || "🏆 Vainqueur : Cashprize & Gloire éternelle\n🥈 2ème place : Dotation Riot Points\n💀 Dernier : Gage imposé en live par la commu !"}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const AdminPanel = ({ players, onAddPlayer, onUpdatePlayer }) => {
             const [apiKey, setApiKey] = useState(localStorage.getItem('riotApiKey') || '');
-            const [syncStatus, setSyncStatus] = useState('');
-            const [isSyncing, setIsSyncing] = useState(false);
-            const [formData, setFormData] = useState({ playerName: '', riotId: '', rank: 'Unranked' });
+            const [status, setStatus] = useState('');
+            const [loading, setLoading] = useState(false);
+            const [playerForm, setPlayerForm] = useState({ playerName: '', riotId: '', twitchUrl: '' });
 
-            const handleSyncAll = async () => {
-                if (!apiKey.trim()) return setSyncStatus("❌ Erreur : Clé Riot API manquante.");
-                setIsSyncing(true);
-                setSyncStatus("⏳ Début de la synchronisation via le serveur...");
-                
+            const handleSync = async () => {
+                if (!apiKey.trim()) return setStatus("❌ Clé API Riot requise.");
+                setLoading(true);
+                setStatus("⏳ Synchronisation des invocateurs via le proxy Vercel...");
                 let success = 0, errors = [];
-                for (const player of players) {
+
+                for (const p of players) {
                     try {
-                        if (!player.riotId || !player.riotId.includes('#')) {
-                            throw new Error("Le Riot ID doit contenir un # (ex: Nom#EUW)");
-                        }
-                        const [gameName, tagLine] = player.riotId.split('#');
-                        
-                        // 1. Récupération du PUUID
-                        const accountRes = await fetch(`/api/riot?type=account&gameName=${encodeURIComponent(gameName.trim())}&tagLine=${encodeURIComponent(tagLine.trim())}&apiKey=${encodeURIComponent(apiKey.trim())}`);
-                        const accountData = await accountRes.json();
-                        if (!accountRes.ok) {
-                            throw new Error(accountData.error || `Erreur Account (${accountRes.status})`);
-                        }
+                        const [gameName, tagLine] = p.riotId.split('#');
+                        const accRes = await fetch(`/api/riot?type=account&gameName=${encodeURIComponent(gameName.trim())}&tagLine=${encodeURIComponent(tagLine.trim())}&apiKey=${encodeURIComponent(apiKey.trim())}`);
+                        const accData = await accRes.json();
+                        if (!accRes.ok) throw new Error(accData.error || `Erreur Account (${accRes.status})`);
 
-                        // 2. Récupération du Summoner (icône de profil)
-                        const summonerRes = await fetch(`/api/riot?type=summoner&value=${accountData.puuid}&apiKey=${encodeURIComponent(apiKey.trim())}`);
-                        const summonerData = await summonerRes.json();
-                        if (!summonerRes.ok) {
-                            throw new Error(summonerData.error || `Erreur Summoner (${summonerRes.status})`);
-                        }
+                        const sumRes = await fetch(`/api/riot?type=summoner&value=${accData.puuid}&apiKey=${encodeURIComponent(apiKey.trim())}`);
+                        const sumData = await sumRes.json();
+                        if (!sumRes.ok) throw new Error(sumData.error || `Erreur Summoner (${sumRes.status})`);
 
-                        // 3. Récupération des entrées de rang via PUUID
-                        const leagueRes = await fetch(`/api/riot?type=league&value=${accountData.puuid}&apiKey=${encodeURIComponent(apiKey.trim())}`);
-                        const leagueData = await leagueRes.json();
-                        if (!leagueRes.ok) {
-                            throw new Error(leagueData.error || `Erreur League (${leagueRes.status})`);
-                        }
+                        const legRes = await fetch(`/api/riot?type=league&value=${accData.puuid}&apiKey=${encodeURIComponent(apiKey.trim())}`);
+                        const legData = await legRes.json();
+                        if (!legRes.ok) throw new Error(legData.error || `Erreur League (${legRes.status})`);
 
-                        const soloQ = Array.isArray(leagueData) ? leagueData.find(q => q.queueType === 'RANKED_SOLO_5x5') : null;
+                        const soloQ = Array.isArray(legData) ? legData.find(q => q.queueType === 'RANKED_SOLO_5x5') : null;
                         let rankStr = 'Unranked', wins = 0, losses = 0, currentAbsLP = 0;
-                        const profileIconUrl = `https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/profile-icons/${summonerData.profileIconId}.jpg`;
+                        const iconUrl = `https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/profile-icons/${sumData.profileIconId}.jpg`;
 
                         if (soloQ) {
                             rankStr = soloQ.tier.charAt(0).toUpperCase() + soloQ.tier.slice(1).toLowerCase();
@@ -322,13 +491,13 @@
                             currentAbsLP = calculateAbsoluteLP(soloQ.tier, soloQ.rank, soloQ.leaguePoints);
                         }
 
-                        let startLP = player.startAbsoluteLP ?? currentAbsLP;
-                        
-                        await onUpdatePlayer(player.id, {
+                        let startLP = p.startAbsoluteLP ?? currentAbsLP;
+
+                        await onUpdatePlayer(p.id, {
                             rank: rankStr,
                             wins,
                             losses,
-                            profileImg: player.profileImg || profileIconUrl,
+                            profileImg: iconUrl,
                             startAbsoluteLP: startLP,
                             currentAbsoluteLP: currentAbsLP,
                             lpDelta: currentAbsLP - startLP
@@ -336,258 +505,200 @@
                         success++;
                         await new Promise(r => setTimeout(r, 200));
                     } catch (err) {
-                        errors.push(`- ${player.playerName}: ${err.message}`);
+                        errors.push(`${p.playerName} : ${err.message}`);
                     }
                 }
-                setSyncStatus(errors.length ? `⚠️ ${success} succès, ${errors.length} erreur(s) :\n${errors.join('\n')}` : `✅ Synchronisation réussie pour ${success} joueur(s).`);
-                setIsSyncing(false);
+                setStatus(errors.length ? `⚠️ ${success} mis à jour, erreurs :\n${errors.join('\n')}` : `✅ ${success} joueur(s) synchronisés avec succès.`);
+                setLoading(false);
             };
 
-            const handleAdd = async (e) => {
+            const submitPlayer = async (e) => {
                 e.preventDefault();
-                await onAddPlayer({ ...formData, lpDelta: 0, wins: 0, losses: 0 });
-                setFormData({ playerName: '', riotId: '', rank: 'Unranked' });
+                await onAddPlayer({ ...playerForm, rank: 'Unranked', lpDelta: 0, wins: 0, losses: 0 });
+                setPlayerForm({ playerName: '', riotId: '', twitchUrl: '' });
             };
 
             return (
-                <div className="space-y-12">
-                    <div className="bg-slate-800 p-8 rounded-2xl border border-blue-500/30">
-                        <h2 className="text-2xl font-black text-white flex items-center gap-3 mb-6"><Settings className="text-blue-400"/> Synchronisation auto Riot</h2>
-                        <input 
-                            type="password" 
-                            value={apiKey} 
-                            onChange={e => { setApiKey(e.target.value); localStorage.setItem('riotApiKey', e.target.value); }} 
-                            placeholder="Clé API (RGAPI-...)" 
-                            className="w-full mb-4 bg-slate-900 border border-slate-600 rounded-xl px-4 py-3 text-white" 
-                        />
-                        <button onClick={handleSyncAll} disabled={isSyncing} className="bg-blue-600 hover:bg-blue-500 text-white font-bold px-6 py-3 rounded-xl w-full transition">
-                            {isSyncing ? 'Synchronisation en cours...' : 'Synchroniser'}
-                        </button>
-                        {syncStatus && <pre className="mt-4 p-4 bg-slate-900 rounded-lg text-sm whitespace-pre-wrap">{syncStatus}</pre>}
-                    </div>
-
-                    <form onSubmit={handleAdd} className="bg-slate-800 p-8 rounded-2xl border border-slate-700">
-                        <h2 className="text-2xl font-black text-white flex items-center gap-3 mb-6"><UserPlus className="text-blue-400"/> Ajouter un joueur</h2>
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <input required type="text" placeholder="Pseudo (ex: Voly)" value={formData.playerName} onChange={e => setFormData({...formData, playerName: e.target.value})} className="bg-slate-900 border border-slate-600 rounded-xl px-4 py-3 text-white" />
-                            <input required type="text" placeholder="Riot ID (ex: Voly#EUW)" value={formData.riotId} onChange={e => setFormData({...formData, riotId: e.target.value})} className="bg-slate-900 border border-slate-600 rounded-xl px-4 py-3 text-white" />
-                        </div>
-                        <button type="submit" className="mt-4 w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-3 rounded-xl transition">Inscrire</button>
-                    </form>
-                </div>
-            );
-        };
-
-        const RulesAndConfig = ({ config, onUpdateConfig, isAdmin }) => {
-            const [isEditing, setIsEditing] = useState(false);
-            const [formData, setFormData] = useState(config || {
-                startDate: '',
-                endDate: '',
-                rulesText: '1. Le joueur ayant gagné le plus de LP à la fin de la période gagne le challenge.\n2. Seules les parties en Solo/DuoQ comptent.\n3. Tout comportement toxique (ban) entraîne une disqualification.',
-                prizesText: '🏆 1ère place : 50€ RP\n🥈 2ème place : Un skin épique\n💀 Dernier : Un gage choisi par les gagnants !'
-            });
-
-            useEffect(() => {
-                if (config) setFormData(config);
-            }, [config]);
-
-            const handleSubmit = (e) => {
-                e.preventDefault();
-                onUpdateConfig(formData);
-                setIsEditing(false);
-            };
-
-            const formatDate = (dateStr) => {
-                if (!dateStr) return 'Non définie';
-                const parts = dateStr.split('-');
-                if (parts.length === 3) return `${parts[2]}/${parts[1]}/${parts[0]}`;
-                return dateStr;
-            };
-
-            return (
-                <div className="max-w-4xl mx-auto">
-                    <div className="flex items-center justify-between mb-8">
-                        <h2 className="text-2xl font-bold text-white flex items-center gap-2">
-                            <BookOpen className="w-8 h-8 text-indigo-400" />
-                            Règlement de l'événement
-                        </h2>
-                        {isAdmin && (
+                <div className="max-w-3xl mx-auto space-y-8">
+                    <div className="bg-[#111622] p-6 rounded-2xl border border-purple-500/30">
+                        <h3 className="font-heading text-xl font-bold text-white flex items-center gap-2 mb-4">
+                            <Settings className="text-purple-400" /> Riot API Tracker
+                        </h3>
+                        <div className="flex gap-3 mb-4">
+                            <input 
+                                type="password" 
+                                placeholder="RGAPI-XXXXXXXX-XXXX-..." 
+                                value={apiKey} 
+                                onChange={e => { setApiKey(e.target.value); localStorage.setItem('riotApiKey', e.target.value); }}
+                                className="flex-1 bg-[#0b0e15] border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white"
+                            />
                             <button 
-                                onClick={() => setIsEditing(!isEditing)}
-                                className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-300 px-4 py-2 rounded-lg border border-slate-600 transition shadow"
+                                onClick={handleSync} 
+                                disabled={loading}
+                                className="bg-purple-600 hover:bg-purple-500 text-white font-heading font-bold px-6 py-2.5 rounded-xl transition disabled:opacity-50"
                             >
-                                {isEditing ? <><X size={18}/> Annuler</> : <><Edit2 size={18}/> Modifier</>}
+                                {loading ? 'Sync...' : 'Synchroniser'}
                             </button>
-                        )}
+                        </div>
+                        {status && <pre className="p-3 bg-black/40 rounded-lg text-xs font-mono text-slate-300 whitespace-pre-wrap">{status}</pre>}
                     </div>
 
-                    {isEditing ? (
-                        <form onSubmit={handleSubmit} className="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-xl space-y-6">
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                <div>
-                                    <label className="block text-sm font-medium text-slate-300 mb-1">Date de début</label>
-                                    <input type="date" value={formData.startDate || ''} onChange={e => setFormData({...formData, startDate: e.target.value})} className="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-2 text-white" />
-                                </div>
-                                <div>
-                                    <label className="block text-sm font-medium text-slate-300 mb-1">Date de fin</label>
-                                    <input type="date" value={formData.endDate || ''} onChange={e => setFormData({...formData, endDate: e.target.value})} className="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-2 text-white" />
-                                </div>
-                            </div>
-                            <div>
-                                <label className="block text-sm font-medium text-slate-300 mb-1">Règles du challenge</label>
-                                <textarea rows="5" value={formData.rulesText} onChange={e => setFormData({...formData, rulesText: e.target.value})} className="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-3 text-white" placeholder="Règles..." />
-                            </div>
-                            <div>
-                                <label className="block text-sm font-medium text-slate-300 mb-1">Récompenses & Gages</label>
-                                <textarea rows="4" value={formData.prizesText} onChange={e => setFormData({...formData, prizesText: e.target.value})} className="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-3 text-white" placeholder="À gagner / À perdre..." />
-                            </div>
-                            <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition">
-                                Sauvegarder le règlement
-                            </button>
-                        </form>
-                    ) : (
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                            <div className="md:col-span-2 space-y-6">
-                                <div className="bg-slate-800 p-8 rounded-2xl border border-slate-700 shadow-xl">
-                                    <h3 className="text-xl font-bold text-indigo-400 mb-4 border-b border-slate-700 pb-3 flex items-center gap-2"><BookOpen size={20}/> Les Règles</h3>
-                                    <div className="text-slate-300 whitespace-pre-wrap leading-relaxed text-lg">
-                                        {formData.rulesText}
-                                    </div>
-                                </div>
-                                <div className="bg-slate-800 p-8 rounded-2xl border border-slate-700 shadow-xl">
-                                    <h3 className="text-xl font-bold text-yellow-400 mb-4 border-b border-slate-700 pb-3 flex items-center gap-2"><Trophy size={20}/> À gagner / À perdre</h3>
-                                    <div className="text-slate-300 whitespace-pre-wrap leading-relaxed text-lg">
-                                        {formData.prizesText}
-                                    </div>
-                                </div>
-                            </div>
-                            
-                            <div className="md:col-span-1">
-                                <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-6 rounded-2xl border border-slate-700 shadow-xl">
-                                    <h3 className="text-lg font-bold text-white mb-6 flex items-center gap-2">
-                                        <Settings className="w-5 h-5 text-slate-400" /> Infos durée
-                                    </h3>
-                                    <div className="space-y-6">
-                                        <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-700/50">
-                                            <div className="text-xs text-slate-500 uppercase font-bold tracking-wider mb-1">Date de début</div>
-                                            <div className="text-xl font-semibold text-slate-200">{formatDate(formData.startDate)}</div>
-                                        </div>
-                                        <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-700/50">
-                                            <div className="text-xs text-slate-500 uppercase font-bold tracking-wider mb-1">Date de fin</div>
-                                            <div className="text-xl font-semibold text-slate-200">{formatDate(formData.endDate)}</div>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
+                    <form onSubmit={submitPlayer} className="bg-[#111622] p-6 rounded-2xl border border-slate-800">
+                        <h3 className="font-heading text-xl font-bold text-white flex items-center gap-2 mb-4">
+                            <UserPlus className="text-emerald-400" /> Inscrire un compétiteur
+                        </h3>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+                            <input 
+                                required 
+                                placeholder="Pseudo streamer" 
+                                value={playerForm.playerName}
+                                onChange={e => setPlayerForm({...playerForm, playerName: e.target.value})}
+                                className="bg-[#0b0e15] border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white"
+                            />
+                            <input 
+                                required 
+                                placeholder="Riot ID (Nom#TAG)" 
+                                value={playerForm.riotId}
+                                onChange={e => setPlayerForm({...playerForm, riotId: e.target.value})}
+                                className="bg-[#0b0e15] border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white"
+                            />
+                            <input 
+                                placeholder="URL Twitch (optionnel)" 
+                                value={playerForm.twitchUrl}
+                                onChange={e => setPlayerForm({...playerForm, twitchUrl: e.target.value})}
+                                className="bg-[#0b0e15] border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white"
+                            />
                         </div>
-                    )}
+                        <button type="submit" className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-heading font-bold py-2.5 rounded-xl transition">
+                            Ajouter au challenge
+                        </button>
+                    </form>
                 </div>
             );
         };
 
         const App = () => {
             const [user, setUser] = useState(null);
-            const [activeTab, setActiveTab] = useState('leaderboard');
+            const [tab, setTab] = useState('classement');
             const [players, setPlayers] = useState([]);
             const [config, setConfig] = useState(null);
             const [isAdmin, setIsAdmin] = useState(false);
-            const [showAdminLogin, setShowAdminLogin] = useState(false);
-            const [adminPwd, setAdminPwd] = useState('');
+            const [showLogin, setShowLogin] = useState(false);
+            const [pwd, setPwd] = useState('');
             const [toDelete, setToDelete] = useState(null);
-            const [dbError, setDbError] = useState(null);
 
             useEffect(() => {
                 if (!auth) return;
-                signInAnonymously(auth).catch(err => setDbError("Erreur Auth : " + err.message));
+                signInAnonymously(auth).catch(err => console.error(err));
                 onAuthStateChanged(auth, setUser);
             }, []);
 
             useEffect(() => {
                 if (!user || !db) return;
-                
-                const playersRef = collection(db, 'players');
-                const unsubPlayers = onSnapshot(playersRef, 
-                    (snap) => {
-                        setPlayers(snap.docs.map(d => ({id: d.id, ...d.data()})));
-                        setDbError(null);
-                    },
-                    (err) => {
-                        console.error("Firebase Error :", err);
-                        if (err.code === 'permission-denied') {
-                            setDbError("⚠️ Autorisations Firebase manquantes. Mettez à jour les règles (Rules) dans Firestore Database.");
-                        }
-                    }
-                );
-                
-                const configRef = doc(db, 'config', 'main');
-                const unsubConfig = onSnapshot(configRef, 
-                    (docSnap) => {
-                        if (docSnap.exists()) setConfig(docSnap.data());
-                    },
-                    (err) => console.error(err)
-                );
-
-                return () => { unsubPlayers(); unsubConfig(); };
+                const unsubP = onSnapshot(collection(db, 'players'), snap => {
+                    setPlayers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+                });
+                const unsubC = onSnapshot(doc(db, 'config', 'main'), snap => {
+                    if (snap.exists()) setConfig(snap.data());
+                });
+                return () => { unsubP(); unsubC(); };
             }, [user]);
 
             const crud = {
-                add: async (data) => addDoc(collection(db, 'players'), data),
+                add: async data => addDoc(collection(db, 'players'), data),
                 update: async (id, data) => updateDoc(doc(db, 'players', id), data),
-                del: async (id) => deleteDoc(doc(db, 'players', id)),
-                updateConfig: async (data) => setDoc(doc(db, 'config', 'main'), data, { merge: true })
+                del: async id => deleteDoc(doc(db, 'players', id)),
+                updateConfig: async data => setDoc(doc(db, 'config', 'main'), data, { merge: true })
             };
 
-            return (
-                <div className="min-h-screen bg-[#0f1219] text-slate-200 font-sans selection:bg-blue-500/30">
-                    <nav className="bg-[#151921] border-b border-slate-800/80 sticky top-0 z-50 p-4">
-                        <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4">
-                            <h1 className="text-2xl font-black text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-400">SOLOQ CHALLENGE</h1>
-                            <div className="flex gap-2 bg-slate-900/80 p-1.5 rounded-xl border border-slate-700/50">
-                                <button onClick={() => setActiveTab('leaderboard')} className={`px-4 py-2 rounded-lg text-sm font-bold ${activeTab === 'leaderboard' ? 'bg-slate-700 text-white' : 'text-slate-400'}`}>Classement</button>
-                                <button onClick={() => setActiveTab('players')} className={`px-4 py-2 rounded-lg text-sm font-bold ${activeTab === 'players' ? 'bg-slate-700 text-white' : 'text-slate-400'}`}>Joueurs</button>
-                                <button onClick={() => setActiveTab('rules')} className={`px-4 py-2 rounded-lg text-sm font-bold ${activeTab === 'rules' ? 'bg-slate-700 text-white' : 'text-slate-400'}`}>Règlement</button>
-                                {isAdmin && <button onClick={() => setActiveTab('admin')} className={`px-4 py-2 rounded-lg text-sm font-bold ${activeTab === 'admin' ? 'bg-slate-700 text-white' : 'text-slate-400'}`}>Admin</button>}
-                                <div className="w-px bg-slate-700 mx-2"></div>
-                                {isAdmin ? 
-                                    <button onClick={() => {setIsAdmin(false); setActiveTab('leaderboard')}} className="px-4 py-2 rounded-lg text-sm font-bold text-red-400">Quitter</button> : 
-                                    <button onClick={() => setShowAdminLogin(true)} className="px-4 py-2 rounded-lg text-sm font-bold text-slate-400"><Lock size={16}/></button>}
-                            </div>
-                        </div>
-                    </nav>
+            const stats = useMemo(() => {
+                const totalGames = players.reduce((acc, p) => acc + (p.wins || 0) + (p.losses || 0), 0);
+                return { totalGames, count: players.length };
+            }, [players]);
 
-                    <main className="max-w-7xl mx-auto p-4 py-10">
-                        {dbError && (
-                            <div className="mb-8 bg-red-500/10 border border-red-500/50 p-4 rounded-xl flex items-center gap-4 text-red-200">
-                                <AlertTriangle className="text-red-500 w-8 h-8 shrink-0" />
-                                <div>
-                                    <h3 className="font-bold text-lg text-red-400">Accès à la base de données refusé</h3>
-                                    <p className="text-sm">{dbError}</p>
+            return (
+                <div className="flex flex-col min-h-screen">
+                    {/* Header soloqchallenge.fr style */}
+                    <header className="border-b border-slate-800/80 bg-[#0c1017]/90 backdrop-blur-md sticky top-0 z-40">
+                        <div className="max-w-7xl mx-auto px-4 py-3 flex flex-wrap justify-between items-center gap-4">
+                            <div className="flex items-center gap-6">
+                                <div className="flex items-center gap-2">
+                                    <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-purple-500 to-blue-600 flex items-center justify-center font-heading font-black text-white text-lg shadow-md">
+                                        SQ
+                                    </div>
+                                    <span className="font-heading font-black text-2xl tracking-wider text-transparent bg-clip-text bg-gradient-to-r from-purple-400 via-pink-400 to-yellow-400">
+                                        SOLOQ CHALLENGE
+                                    </span>
+                                </div>
+                                <div className="hidden lg:flex items-center gap-4 text-xs font-heading uppercase text-slate-400 pl-6 border-l border-slate-800">
+                                    <div>Participants : <span className="text-white font-bold">{stats.count}</span></div>
+                                    <div>Parties jouées : <span className="text-purple-400 font-bold">{stats.totalGames}</span></div>
                                 </div>
                             </div>
-                        )}
-                        {activeTab === 'leaderboard' && <Leaderboard players={players} onUpdatePlayer={crud.update} isAdmin={isAdmin} onRequestDelete={setToDelete} />}
-                        {activeTab === 'players' && <PlayersList players={players} />}
-                        {activeTab === 'rules' && <RulesAndConfig config={config} onUpdateConfig={crud.updateConfig} isAdmin={isAdmin} />}
-                        {activeTab === 'admin' && isAdmin && <AdminDashboard players={players} onAddPlayer={crud.add} onUpdatePlayer={crud.update} />}
+
+                            <nav className="flex items-center gap-1.5 bg-[#121722] p-1 rounded-xl border border-slate-800">
+                                <button onClick={() => setTab('classement')} className={`px-4 py-1.5 rounded-lg text-xs font-heading font-bold uppercase transition ${tab === 'classement' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-white'}`}>Classement</button>
+                                <button onClick={() => setTab('joueurs')} className={`px-4 py-1.5 rounded-lg text-xs font-heading font-bold uppercase transition ${tab === 'joueurs' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-white'}`}>Joueurs</button>
+                                <button onClick={() => setTab('reglement')} className={`px-4 py-1.5 rounded-lg text-xs font-heading font-bold uppercase transition ${tab === 'reglement' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-white'}`}>Règles</button>
+                                {isAdmin && <button onClick={() => setTab('admin')} className={`px-4 py-1.5 rounded-lg text-xs font-heading font-bold uppercase transition ${tab === 'admin' ? 'bg-amber-600 text-white' : 'text-slate-400 hover:text-white'}`}>Admin</button>}
+                                
+                                <div className="w-px h-4 bg-slate-700 mx-1"></div>
+                                {isAdmin ? (
+                                    <button onClick={() => setIsAdmin(false)} className="px-2 py-1 text-red-400 text-xs font-heading font-bold">Quitter</button>
+                                ) : (
+                                    <button onClick={() => setShowLogin(true)} className="p-1.5 text-slate-500 hover:text-white transition"><Lock size={14}/></button>
+                                )}
+                            </nav>
+                        </div>
+                    </header>
+
+                    {/* Main content */}
+                    <main className="max-w-7xl mx-auto px-4 py-8 flex-1 w-full">
+                        {tab === 'classement' && <Leaderboard players={players} onUpdatePlayer={crud.update} isAdmin={isAdmin} onRequestDelete={setToDelete} />}
+                        {tab === 'joueurs' && <PlayersList players={players} />}
+                        {tab === 'reglement' && <RulesView config={config} />}
+                        {tab === 'admin' && isAdmin && <AdminPanel players={players} onAddPlayer={crud.add} onUpdatePlayer={crud.update} />}
                     </main>
 
-                    {showAdminLogin && (
+                    {/* Footer */}
+                    <footer className="border-t border-slate-800/80 bg-[#090c12] py-6 text-center text-xs text-slate-500">
+                        SoloQ Challenge — Plateforme non affiliée à Riot Games. Données synchronisées via l'API Riot Games.
+                    </footer>
+
+                    {/* Admin Modal */}
+                    {showLogin && (
                         <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
-                            <div className="bg-slate-800 p-6 rounded-2xl w-full max-w-sm border border-slate-600">
-                                <div className="flex justify-between mb-4"><h3 className="text-xl font-bold">Admin</h3><button onClick={() => setShowAdminLogin(false)}><X/></button></div>
-                                <input type="password" value={adminPwd} onChange={e=>setAdminPwd(e.target.value)} placeholder="Mot de passe" className="w-full bg-slate-900 border border-slate-600 rounded-xl px-4 py-3 mb-4 text-white" />
-                                <button onClick={() => {if(adminPwd==='Hussein180690'){setIsAdmin(true);setShowAdminLogin(false);setAdminPwd('');}}} className="w-full bg-blue-600 py-3 rounded-xl font-bold">Valider</button>
+                            <div className="bg-[#111622] p-6 rounded-2xl w-full max-w-sm border border-slate-700 shadow-2xl">
+                                <div className="flex justify-between mb-4">
+                                    <h3 className="font-heading font-bold text-lg text-white">Accès Organisateur</h3>
+                                    <button onClick={() => setShowLogin(false)} className="text-slate-400"><X size={18}/></button>
+                                </div>
+                                <input 
+                                    type="password" 
+                                    value={pwd} 
+                                    onChange={e => setPwd(e.target.value)} 
+                                    placeholder="Mot de passe admin" 
+                                    className="w-full bg-[#0b0e15] border border-slate-700 rounded-xl px-4 py-2.5 mb-4 text-white text-sm"
+                                />
+                                <button 
+                                    onClick={() => { if (pwd === 'Hussein180690') { setIsAdmin(true); setShowLogin(false); setPwd(''); } }} 
+                                    className="w-full bg-purple-600 hover:bg-purple-500 text-white font-heading font-bold py-2.5 rounded-xl transition"
+                                >
+                                    Déverrouiller
+                                </button>
                             </div>
                         </div>
                     )}
 
+                    {/* Delete Modal */}
                     {toDelete && (
                         <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
-                            <div className="bg-slate-800 p-6 rounded-2xl w-full max-w-sm border border-slate-600 text-center">
-                                <h3 className="text-xl font-bold mb-4">Supprimer {toDelete.playerName} ?</h3>
-                                <div className="flex justify-center gap-4">
-                                    <button onClick={() => setToDelete(null)} className="px-4 py-2 bg-slate-700 rounded-xl">Annuler</button>
-                                    <button onClick={() => {crud.del(toDelete.id); setToDelete(null);}} className="px-4 py-2 bg-red-600 rounded-xl">Supprimer</button>
+                            <div className="bg-[#111622] p-6 rounded-2xl w-full max-w-sm border border-slate-700 text-center">
+                                <h3 className="font-heading font-bold text-lg text-white mb-2">Retirer {toDelete.playerName} ?</h3>
+                                <p className="text-xs text-slate-400 mb-6">Cette action est définitive et supprimera ses stats du classement.</p>
+                                <div className="flex gap-3">
+                                    <button onClick={() => setToDelete(null)} className="flex-1 bg-slate-800 hover:bg-slate-700 text-white font-heading font-bold py-2 rounded-xl text-sm">Annuler</button>
+                                    <button onClick={() => { crud.del(toDelete.id); setToDelete(null); }} className="flex-1 bg-red-600 hover:bg-red-500 text-white font-heading font-bold py-2 rounded-xl text-sm">Supprimer</button>
                                 </div>
                             </div>
                         </div>
