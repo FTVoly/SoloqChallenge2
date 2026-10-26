@@ -508,37 +508,150 @@
             );
         };
 
+        // ---------- Historique des parties (style OP.GG) ----------
+        const SPELLS = { 1: 'SummonerBoost', 3: 'SummonerExhaust', 4: 'SummonerFlash', 6: 'SummonerHaste', 7: 'SummonerHeal', 11: 'SummonerSmite', 12: 'SummonerTeleport', 13: 'SummonerMana', 14: 'SummonerDot', 21: 'SummonerBarrier', 32: 'SummonerSnowball' };
+        const MULTIKILLS = { 2: 'Double Kill', 3: 'Triple Kill', 4: 'Quadra Kill', 5: 'Penta Kill' };
+        const QUEUES = { 420: 'Ranked Solo/Duo', 440: 'Ranked Flex' };
+
+        let ddVersionPromise = null;
+        const useDdragonVersion = () => {
+            const [v, setV] = useState('15.1.1');
+            useEffect(() => {
+                if (!ddVersionPromise) {
+                    ddVersionPromise = fetch('https://ddragon.leagueoflegends.com/api/versions.json')
+                        .then(r => r.json()).then(a => a[0]).catch(() => null);
+                }
+                ddVersionPromise.then(x => { if (x) setV(x); });
+            }, []);
+            return v;
+        };
+
+        const timeAgo = (ts) => {
+            const diff = Math.max(0, Date.now() - ts);
+            const min = Math.floor(diff / 60000);
+            if (min < 1) return "à l'instant";
+            if (min < 60) return `il y a ${min} min`;
+            const h = Math.floor(min / 60);
+            if (h < 24) return `il y a ${h} h`;
+            const d = Math.floor(h / 24);
+            if (d < 14) return `il y a ${d} jour${d > 1 ? 's' : ''}`;
+            const w = Math.floor(d / 7);
+            if (d < 60) return `il y a ${w} semaines`;
+            return `il y a ${Math.floor(d / 30)} mois`;
+        };
+
+        const formatDuration = (sec) => `${Math.floor((sec || 0) / 60)} m ${String((sec || 0) % 60).padStart(2, '0')} s`;
+
+        const MatchRow = ({ h, player, version }) => {
+            const win = !!h.win;
+            const team = player?.team ?? h.team;
+            const ddImg = (path) => `https://ddragon.leagueoflegends.com/cdn/${version}/img/${path}`;
+            const parts = h.participants || [];
+            const allies = parts.filter(x => x.t === h.teamId);
+            const enemies = parts.filter(x => x.t !== h.teamId);
+            const ratio = h.deaths === 0 ? 'Perfect' : `${(((h.kills || 0) + (h.assists || 0)) / h.deaths).toFixed(2)}:1`;
+            const csMin = h.duration ? ((h.cs || 0) / (h.duration / 60)).toFixed(1) : '0.0';
+            const items = Array.from({ length: 7 }, (_, i) => (h.items || [])[i] || 0);
+            const lp = h.lpChange;
+
+            const renderPart = (x, i) => (
+                <div key={i} className="flex items-center gap-1.5 min-w-0">
+                    <img src={ddImg(`champion/${x.c}.png`)} alt="" className="w-4 h-4 rounded shrink-0" onError={e => { e.currentTarget.style.visibility = 'hidden'; }} />
+                    <span className={`truncate text-[12px] ${x.me ? 'text-white font-bold' : 'text-zinc-400'}`}>{x.n}</span>
+                </div>
+            );
+
+            return (
+                <div className={`rounded-xl border-l-4 px-4 py-3 flex flex-wrap lg:flex-nowrap items-center gap-x-6 gap-y-3 ${win ? 'bg-blue-500/10 border-l-blue-500' : 'bg-red-500/10 border-l-red-500'}`}>
+                    {/* Infos partie */}
+                    <div className="w-40 shrink-0">
+                        <div className="flex items-center gap-1.5 mb-1.5">
+                            <img src={player?.profileImg || DEFAULT_ICON} alt="" className="w-5 h-5 rounded-full object-cover border border-zinc-700" />
+                            <span className="text-xs font-bold text-zinc-100 truncate">{player?.playerName || h.playerName}</span>
+                            <TeamTag team={team} />
+                        </div>
+                        <div className={`text-xs font-bold font-heading uppercase tracking-wide ${win ? 'text-blue-400' : 'text-red-400'}`}>{QUEUES[h.queueId] || 'Partie'}</div>
+                        <div className="text-[11px] text-zinc-500">{timeAgo(h.timestamp)}</div>
+                        <div className="w-8 border-t border-zinc-700 my-1.5"></div>
+                        <div className={`text-xs font-bold ${win ? 'text-blue-400' : 'text-red-400'}`}>{win ? 'Victoire' : 'Défaite'}</div>
+                        <div className="text-[11px] text-zinc-500">{formatDuration(h.duration)}</div>
+                    </div>
+
+                    {/* Champion + sorts */}
+                    <div className="flex items-center gap-1.5 shrink-0">
+                        <div className="relative">
+                            <img src={ddImg(`champion/${h.championName}.png`)} alt={h.championName} title={h.championName} className="w-14 h-14 rounded-full border-2 border-zinc-700" onError={e => { e.currentTarget.style.visibility = 'hidden'; }} />
+                            <span className="absolute -bottom-1 -right-1 bg-zinc-800 border border-zinc-600 text-[10px] text-zinc-200 rounded-full w-5 h-5 flex items-center justify-center font-bold">{h.champLevel}</span>
+                        </div>
+                        <div className="flex flex-col gap-1">
+                            {(h.spells || []).map((sp, i) => SPELLS[sp] ? (
+                                <img key={i} src={ddImg(`spell/${SPELLS[sp]}.png`)} alt="" className="w-6 h-6 rounded" onError={e => { e.currentTarget.style.visibility = 'hidden'; }} />
+                            ) : <div key={i} className="w-6 h-6 rounded bg-zinc-800" />)}
+                        </div>
+                    </div>
+
+                    {/* KDA */}
+                    <div className="w-28 shrink-0 text-center">
+                        <div className="font-heading font-bold text-xl text-white leading-tight">
+                            {h.kills} <span className="text-zinc-500">/</span> <span className="text-red-400">{h.deaths}</span> <span className="text-zinc-500">/</span> {h.assists}
+                        </div>
+                        <div className="text-xs text-zinc-400">{ratio} KDA</div>
+                        {lp !== null && lp !== undefined && (
+                            <div className={`text-xs font-bold mt-1 ${lp > 0 ? 'text-emerald-400' : lp < 0 ? 'text-red-400' : 'text-zinc-400'}`}>{formatLP(lp)} LP</div>
+                        )}
+                    </div>
+
+                    {/* CS / vision */}
+                    <div className="w-28 shrink-0 text-xs text-zinc-400 leading-relaxed">
+                        <div>CS {h.cs} <span className="text-zinc-500">({csMin})</span></div>
+                        <div>Vision {h.vision ?? 0}</div>
+                        {MULTIKILLS[h.multiKill] && <span className="inline-block mt-1 px-2 py-0.5 rounded-md bg-zinc-100 text-zinc-900 text-[10px] font-heading font-bold uppercase">{MULTIKILLS[h.multiKill]}</span>}
+                    </div>
+
+                    {/* Items */}
+                    <div className="flex gap-1 shrink-0">
+                        {items.map((it, i) => it ? (
+                            <img key={i} src={ddImg(`item/${it}.png`)} alt="" className="w-7 h-7 rounded border border-zinc-800" onError={e => { e.currentTarget.style.visibility = 'hidden'; }} />
+                        ) : <div key={i} className="w-7 h-7 rounded bg-zinc-800/80 border border-zinc-800" />)}
+                    </div>
+
+                    {/* Les 10 joueurs */}
+                    <div className="hidden xl:grid grid-cols-2 gap-x-4 gap-y-0.5 w-72 shrink-0 ml-auto">
+                        <div className="space-y-0.5 min-w-0">{allies.map(renderPart)}</div>
+                        <div className="space-y-0.5 min-w-0">{enemies.map(renderPart)}</div>
+                    </div>
+                </div>
+            );
+        };
+
         const HistoryView = ({ history, players }) => {
             const [playerFilter, setPlayerFilter] = useState('all');
             const [teamFilter, setTeamFilter] = useState('all');
+            const [limitRows, setLimitRows] = useState(40);
+            const version = useDdragonVersion();
 
             const playerById = useMemo(() => Object.fromEntries(players.map(p => [p.id, p])), [players]);
 
-            const filtered = useMemo(() => history.filter(h => {
-                if (h.type === 'reset') return playerFilter === 'all' && teamFilter === 'all';
+            const matches = useMemo(() => history
+                .filter(h => h.type === 'match')
+                .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)), [history]);
+
+            const filtered = useMemo(() => matches.filter(h => {
                 const p = playerById[h.playerId];
                 const team = p?.team ?? h.team;
                 if (playerFilter !== 'all' && h.playerId !== playerFilter) return false;
                 if (teamFilter !== 'all' && team !== teamFilter) return false;
                 return true;
-            }), [history, playerFilter, teamFilter, playerById]);
-
-            const resultBadge = (h) => {
-                const w = h.winsGained || 0, l = h.lossesGained || 0;
-                if (w === 1 && l === 0) return <span className="px-2 py-0.5 rounded-md text-[11px] font-heading font-bold uppercase bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">Victoire</span>;
-                if (l === 1 && w === 0) return <span className="px-2 py-0.5 rounded-md text-[11px] font-heading font-bold uppercase bg-red-500/15 text-red-400 border border-zinc-800">Défaite</span>;
-                if (w || l) return <span className="px-2 py-0.5 rounded-md text-[11px] font-heading font-bold uppercase bg-zinc-700/50 text-zinc-300 border border-zinc-600">{w}V / {l}D</span>;
-                return <span className="px-2 py-0.5 rounded-md text-[11px] font-heading font-bold uppercase bg-zinc-700/50 text-zinc-400 border border-zinc-600">Ajustement</span>;
-            };
+            }), [matches, playerFilter, teamFilter, playerById]);
 
             return (
-                <div className="max-w-4xl mx-auto space-y-6">
+                <div className="max-w-6xl mx-auto space-y-6">
                     <div className="flex flex-col sm:flex-row justify-between items-start sm:items-end gap-4">
                         <div>
                             <h2 className="text-2xl font-bold font-heading text-white flex items-center gap-2">
                                 <History className="text-zinc-400" /> Historique des parties
                             </h2>
-                            <p className="text-xs text-zinc-400 mt-0.5">Chaque variation de LP détectée à la synchronisation, pour tous les joueurs.</p>
+                            <p className="text-xs text-zinc-400 mt-0.5">Les parties classées solo/duo de tous les joueurs, de la plus récente à la plus ancienne.</p>
                         </div>
                         <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
                             <select value={teamFilter} onChange={e => setTeamFilter(e.target.value)} className="bg-zinc-900 border border-zinc-700/70 rounded-xl px-3 py-2 text-sm text-zinc-200">
@@ -555,44 +668,16 @@
                         </div>
                     </div>
 
-                    <div className="bg-zinc-900/60 rounded-2xl border border-zinc-800 divide-y divide-zinc-800/60 overflow-hidden">
+                    <div className="space-y-2">
                         {filtered.length === 0 && (
-                            <div className="py-12 text-center text-zinc-500 italic text-sm">Aucune entrée pour l'instant. L'historique se remplit à chaque synchronisation.</div>
+                            <div className="bg-zinc-900/60 rounded-2xl border border-zinc-800 py-12 text-center text-zinc-500 italic text-sm">Aucune partie pour l'instant. Elles apparaissent après une synchronisation.</div>
                         )}
-                        {filtered.map(h => {
-                            if (h.type === 'reset') {
-                                return (
-                                    <div key={h.id} className="px-4 py-3 flex items-center gap-3 bg-zinc-800/40">
-                                        <RotateCcw size={16} className="text-zinc-400 shrink-0" />
-                                        <span className="text-sm text-zinc-300 font-heading font-bold uppercase tracking-wide">Compteurs LP réinitialisés</span>
-                                        <span className="ml-auto text-xs text-zinc-500">{formatDate(h.timestamp)}</span>
-                                    </div>
-                                );
-                            }
-                            const p = playerById[h.playerId];
-                            const team = p?.team ?? h.team;
-                            const change = Number(h.change) || 0;
-                            return (
-                                <div key={h.id} className={`px-4 py-3 flex flex-wrap items-center gap-x-4 gap-y-2 hover:bg-zinc-800/30 transition-colors border-l-4 ${team === 'rouge' ? 'border-l-red-500/70' : team === 'bleu' ? 'border-l-blue-500/70' : 'border-l-transparent'}`}>
-                                    <div className="flex items-center gap-3 min-w-[180px] flex-1">
-                                        <img src={p?.profileImg || DEFAULT_ICON} alt="" className="w-9 h-9 rounded-full object-cover border border-zinc-700" />
-                                        <div>
-                                            <div className="font-bold text-zinc-100 text-sm flex items-center gap-2">{p?.playerName || h.playerName} <TeamTag team={team} /></div>
-                                            <div className="text-[11px] text-zinc-500">{formatDate(h.timestamp)}</div>
-                                        </div>
-                                    </div>
-                                    <div>{resultBadge(h)}</div>
-                                    <div className="text-xs text-zinc-400 min-w-[150px]">
-                                        {h.rankBefore && h.rankBefore !== h.rankAfter ? <>{h.rankBefore} <ChevronRight size={11} className="inline" /> </> : null}
-                                        <span className="text-zinc-200">{h.rankAfter}</span>
-                                    </div>
-                                    <div className="text-right min-w-[110px]">
-                                        <div className={`font-heading font-bold text-lg leading-tight ${change > 0 ? 'text-emerald-400' : change < 0 ? 'text-red-400' : 'text-zinc-400'}`}>{formatLP(change)} LP</div>
-                                        <div className="text-[11px] text-zinc-500">Total : {formatLP(h.deltaAfter)} LP</div>
-                                    </div>
-                                </div>
-                            );
-                        })}
+                        {filtered.slice(0, limitRows).map(h => (
+                            <MatchRow key={h.id} h={h} player={playerById[h.playerId]} version={version} />
+                        ))}
+                        {filtered.length > limitRows && (
+                            <button onClick={() => setLimitRows(l => l + 40)} className="w-full py-2.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-sm font-heading font-bold uppercase text-zinc-300 transition">Voir plus</button>
+                        )}
                     </div>
                 </div>
             );
@@ -620,7 +705,7 @@
                     };
                     // Nouveau compte Riot = on repart de zéro (le point de départ sera repris à la prochaine synchro)
                     if (riotIdChanged) {
-                        Object.assign(data, { startAbsoluteLP: null, currentAbsoluteLP: null, lpDelta: 0, rank: 'Unranked', wins: 0, losses: 0 });
+                        Object.assign(data, { startAbsoluteLP: null, currentAbsoluteLP: null, lpDelta: 0, rank: 'Unranked', rankLabel: 'Unranked', wins: 0, losses: 0, historySince: null });
                     }
                     await onSave(player.id, data);
                     onClose();
@@ -714,32 +799,41 @@
             );
         };
 
-        const AdminPanel = ({ players, onAddPlayer, onUpdatePlayer, onAddHistory, onRequestEdit, onRequestReset }) => {
+        const AdminPanel = ({ players, matches, onAddPlayer, onUpdatePlayer, onSaveMatch, onRequestEdit, onRequestReset }) => {
             const [apiKey, setApiKey] = useState(() => { try { return localStorage.getItem('riotApiKey') || ''; } catch { return ''; } });
             const [status, setStatus] = useState('');
             const [loading, setLoading] = useState(false);
             const [playerForm, setPlayerForm] = useState({ playerName: '', riotId: '', twitchUrl: '', team: '' });
 
+            // Appel Riot via le proxy Vercel, avec nouvelle tentative si la limite de requêtes est atteinte
+            const riot = async (params) => {
+                for (let attempt = 0; attempt < 4; attempt++) {
+                    const r = await fetch(`/api/riot?${new URLSearchParams({ ...params, apiKey: apiKey.trim() })}`);
+                    if (r.status === 429) {
+                        setStatus('⏳ Limite de requêtes Riot atteinte, nouvelle tentative dans 15 s...');
+                        await new Promise(res => setTimeout(res, 15000));
+                        continue;
+                    }
+                    const data = await r.json();
+                    if (!r.ok) throw new Error(data?.status?.message || data?.error || `Erreur Riot (${r.status})`);
+                    return data;
+                }
+                throw new Error('Limite de requêtes Riot atteinte, réessaie dans 2 minutes');
+            };
+
             const handleSync = async () => {
                 if (!apiKey.trim()) return setStatus("❌ Clé API Riot requise.");
                 setLoading(true);
                 setStatus("⏳ Synchronisation des invocateurs via le proxy Vercel...");
-                let success = 0, errors = [];
+                let success = 0, newGames = 0, errors = [];
 
                 for (const p of players) {
                     try {
+                        const syncStart = Math.floor(Date.now() / 1000);
                         const [gameName, tagLine] = p.riotId.split('#');
-                        const accRes = await fetch(`/api/riot?type=account&gameName=${encodeURIComponent(gameName.trim())}&tagLine=${encodeURIComponent(tagLine.trim())}&apiKey=${encodeURIComponent(apiKey.trim())}`);
-                        const accData = await accRes.json();
-                        if (!accRes.ok) throw new Error(accData.error || `Erreur Account (${accRes.status})`);
-
-                        const sumRes = await fetch(`/api/riot?type=summoner&value=${accData.puuid}&apiKey=${encodeURIComponent(apiKey.trim())}`);
-                        const sumData = await sumRes.json();
-                        if (!sumRes.ok) throw new Error(sumData.error || `Erreur Summoner (${sumRes.status})`);
-
-                        const legRes = await fetch(`/api/riot?type=league&value=${accData.puuid}&apiKey=${encodeURIComponent(apiKey.trim())}`);
-                        const legData = await legRes.json();
-                        if (!legRes.ok) throw new Error(legData.error || `Erreur League (${legRes.status})`);
+                        const accData = await riot({ type: 'account', gameName: gameName.trim(), tagLine: tagLine.trim() });
+                        const sumData = await riot({ type: 'summoner', value: accData.puuid });
+                        const legData = await riot({ type: 'league', value: accData.puuid });
 
                         const soloQ = Array.isArray(legData) ? legData.find(q => q.queueType === 'RANKED_SOLO_5x5') : null;
                         let rankStr = 'Unranked', rankLabel = 'Unranked', wins = 0, losses = 0, currentAbsLP = 0;
@@ -757,27 +851,54 @@
                         let startLP = p.startAbsoluteLP ?? currentAbsLP;
                         const newDelta = currentAbsLP - startLP;
 
-                        // Historique : on enregistre seulement s'il y a eu du mouvement depuis la dernière synchro
+                        // Historique des parties classées solo/duo (Match-v5)
                         const hasPrevious = p.currentAbsoluteLP !== undefined && p.currentAbsoluteLP !== null;
-                        if (hasPrevious) {
-                            const change = currentAbsLP - p.currentAbsoluteLP;
-                            const winsGained = Math.max(0, wins - (p.wins || 0));
-                            const lossesGained = Math.max(0, losses - (p.losses || 0));
-                            if (change !== 0 || winsGained > 0 || lossesGained > 0) {
-                                await onAddHistory({
-                                    type: 'game',
+                        try {
+                            const ids = await riot({
+                                type: 'matchids', value: accData.puuid, queue: '420', count: '5',
+                                ...(p.historySince ? { startTime: String(p.historySince) } : {})
+                            });
+                            const known = new Set(matches.filter(m => m.playerId === p.id).map(m => m.matchId));
+                            const fresh = (Array.isArray(ids) ? ids : []).filter(id => !known.has(id));
+                            // Un seul nouveau match depuis la dernière synchro : on peut lui attribuer la variation de LP
+                            const lpIfOne = (fresh.length === 1 && hasPrevious) ? currentAbsLP - p.currentAbsoluteLP : null;
+
+                            for (const matchId of [...fresh].reverse()) {
+                                const m = await riot({ type: 'match', value: matchId });
+                                const info = m.info;
+                                const me = info.participants.find(x => x.puuid === accData.puuid);
+                                if (!me) continue;
+                                await onSaveMatch(`${matchId}_${p.id}`, {
+                                    type: 'match',
+                                    matchId,
                                     playerId: p.id,
                                     playerName: p.playerName,
                                     team: p.team || '',
-                                    timestamp: Date.now(),
-                                    change,
-                                    winsGained,
-                                    lossesGained,
-                                    rankBefore: p.rankLabel || p.rank || 'Unranked',
-                                    rankAfter: rankLabel,
-                                    deltaAfter: newDelta
+                                    timestamp: info.gameEndTimestamp || (info.gameCreation + (info.gameDuration || 0) * 1000),
+                                    duration: info.gameDuration || 0,
+                                    queueId: info.queueId,
+                                    win: !!me.win,
+                                    teamId: me.teamId,
+                                    championName: me.championName,
+                                    champLevel: me.champLevel,
+                                    kills: me.kills, deaths: me.deaths, assists: me.assists,
+                                    cs: (me.totalMinionsKilled || 0) + (me.neutralMinionsKilled || 0),
+                                    vision: me.visionScore || 0,
+                                    multiKill: me.largestMultiKill || 0,
+                                    items: [0, 1, 2, 3, 4, 5, 6].map(i => me['item' + i] || 0),
+                                    spells: [me.summoner1Id, me.summoner2Id],
+                                    lpChange: lpIfOne,
+                                    participants: info.participants.map(x => ({
+                                        n: x.riotIdGameName || x.summonerName || '?',
+                                        c: x.championName,
+                                        t: x.teamId,
+                                        me: x.puuid === accData.puuid
+                                    }))
                                 });
+                                newGames++;
                             }
+                        } catch (matchErr) {
+                            errors.push(`${p.playerName} (parties) : ${matchErr.message}`);
                         }
 
                         await onUpdatePlayer(p.id, {
@@ -788,7 +909,8 @@
                             profileImg: iconUrl,
                             startAbsoluteLP: startLP,
                             currentAbsoluteLP: currentAbsLP,
-                            lpDelta: newDelta
+                            lpDelta: newDelta,
+                            historySince: Math.max(p.historySince || 0, syncStart - 600)
                         });
                         success++;
                         await new Promise(r => setTimeout(r, 200));
@@ -796,7 +918,7 @@
                         errors.push(`${p.playerName} : ${err.message}`);
                     }
                 }
-                setStatus(errors.length ? `⚠️ ${success} mis à jour, erreurs :\n${errors.join('\n')}` : `✅ ${success} joueur(s) synchronisés avec succès.`);
+                setStatus(errors.length ? `⚠️ ${success} mis à jour, ${newGames} nouvelle(s) partie(s), erreurs :\n${errors.join('\n')}` : `✅ ${success} joueur(s) synchronisés, ${newGames} nouvelle(s) partie(s) enregistrée(s).`);
                 setLoading(false);
             };
 
@@ -944,7 +1066,7 @@
                 update: async (id, data) => updateDoc(doc(db, 'players', id), data),
                 del: async id => deleteDoc(doc(db, 'players', id)),
                 updateConfig: async data => setDoc(doc(db, 'config', 'main'), data, { merge: true }),
-                addHistory: async data => addDoc(collection(db, 'history'), data)
+                saveMatch: async (id, data) => setDoc(doc(db, 'history', id), data)
             };
 
             // Remet tous les compteurs LP à 0 : le LP actuel devient le nouveau point de départ
@@ -955,7 +1077,8 @@
                     players.forEach(p => {
                         batch.update(doc(db, 'players', p.id), {
                             startAbsoluteLP: p.currentAbsoluteLP ?? null,
-                            lpDelta: 0
+                            lpDelta: 0,
+                            historySince: Math.floor(Date.now() / 1000)
                         });
                     });
                     await batch.commit();
@@ -968,7 +1091,6 @@
                             await b.commit();
                         }
                     }
-                    await crud.addHistory({ type: 'reset', timestamp: Date.now() });
                     setShowReset(false);
                     setClearHistory(false);
                 } catch (e) {
@@ -1032,7 +1154,8 @@
                                 players={players}
                                 onAddPlayer={crud.add}
                                 onUpdatePlayer={crud.update}
-                                onAddHistory={crud.addHistory}
+                                matches={history.filter(h => h.type === 'match')}
+                                onSaveMatch={crud.saveMatch}
                                 onRequestEdit={setToEdit}
                                 onRequestReset={() => setShowReset(true)}
                             />
@@ -1083,7 +1206,7 @@
                                 <p className="text-xs text-zinc-400 mb-4">Tous les joueurs et les deux équipes repartent à 0 LP à partir de leur rang actuel.</p>
                                 <label className="flex items-center justify-center gap-2 text-xs text-zinc-300 mb-6 cursor-pointer">
                                     <input type="checkbox" checked={clearHistory} onChange={e => setClearHistory(e.target.checked)} className="accent-red-500" />
-                                    Vider aussi l'historique
+                                    Vider aussi l'historique des parties
                                 </label>
                                 <div className="flex gap-3">
                                     <button onClick={() => { setShowReset(false); setClearHistory(false); }} className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-white font-heading font-bold py-2 rounded-xl text-sm">Annuler</button>
