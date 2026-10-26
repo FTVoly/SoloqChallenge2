@@ -29,34 +29,18 @@
         @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700;800&family=Inter:wght@400;500;600;700&display=swap');
         
         body { 
-            background: #090c12;
-            color: #e2e8f0; 
+            background: #0a0a0b;
+            color: #e4e4e7; 
             font-family: 'Inter', sans-serif; 
-            background-image: 
-                radial-gradient(circle at 50% 0%, rgba(120, 58, 240, 0.12) 0%, transparent 45%),
-                radial-gradient(circle at 10% 20%, rgba(37, 99, 235, 0.08) 0%, transparent 40%);
-            background-attachment: fixed;
         }
         
         h1, h2, h3, .font-heading {
             font-family: 'Rajdhani', sans-serif;
             text-transform: uppercase;
-            letter-spacing: 0.04em;
+            letter-spacing: 0.03em;
         }
 
-        .gold-glow {
-            box-shadow: 0 0 25px rgba(234, 179, 8, 0.25);
-            border-color: rgba(234, 179, 8, 0.5);
-        }
-        .silver-glow {
-            box-shadow: 0 0 20px rgba(148, 163, 184, 0.2);
-            border-color: rgba(148, 163, 184, 0.4);
-        }
-        .bronze-glow {
-            box-shadow: 0 0 20px rgba(217, 119, 6, 0.2);
-            border-color: rgba(217, 119, 6, 0.4);
-        }
-    </style>
+            </style>
 </head>
 <body class="min-h-screen">
     <div id="root"></div>
@@ -67,11 +51,12 @@
         import { 
             Trophy, Swords, Flame, ShieldAlert, Award, Clock, Users, 
             ExternalLink, Settings, UserPlus, Edit2, Check, X, Lock, 
-            Twitch, Gamepad2, ArrowUpRight, ChevronRight, Sparkles 
+            Twitch, Gamepad2, ArrowUpRight, ChevronRight, Sparkles,
+            RotateCcw, History, Shield
         } from 'lucide-react';
         import { initializeApp } from 'firebase/app';
         import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
-        import { getFirestore, doc, setDoc, onSnapshot, collection, addDoc, updateDoc, deleteDoc } from 'firebase/firestore';
+        import { getFirestore, doc, setDoc, onSnapshot, collection, addDoc, updateDoc, deleteDoc, query, orderBy, limit, writeBatch, getDocs } from 'firebase/firestore';
 
         const firebaseConfig = {
             apiKey: "AIzaSyBwNrlXY81VOXtp2EGyFb_k3OWHKbtcY2o",
@@ -111,6 +96,93 @@
             return total === 0 ? 0 : Math.round((wins / total) * 100);
         };
 
+        const DEFAULT_ICON = 'https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/profile-icons/29.jpg';
+
+        const TEAMS = {
+            rouge: { label: 'Équipe Rouge', short: 'Rouge', dot: 'bg-red-500', text: 'text-red-400', border: 'border-red-500/40', bg: 'bg-red-500/10', bar: 'bg-red-500', glow: 'shadow-none' },
+            bleu:  { label: 'Équipe Bleue', short: 'Bleu',  dot: 'bg-blue-500', text: 'text-blue-400', border: 'border-blue-500/40', bg: 'bg-blue-500/10', bar: 'bg-blue-500', glow: 'shadow-none' }
+        };
+
+        const formatLP = (v) => {
+            const n = Number(v) || 0;
+            return n > 0 ? `+${n}` : `${n}`;
+        };
+
+        const formatDate = (ts) => {
+            if (!ts) return '';
+            const d = new Date(ts);
+            return d.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' }) + ' · ' + d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+        };
+
+        const TeamTag = ({ team }) => {
+            const t = TEAMS[team];
+            if (!t) return null;
+            return (
+                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold font-heading uppercase tracking-wider border ${t.bg} ${t.text} ${t.border}`}>
+                    <span className={`w-1.5 h-1.5 rounded-full ${t.dot}`}></span>{t.short}
+                </span>
+            );
+        };
+
+        // Compteur global par équipe (somme des LP gagnés/perdus + bilan V/D)
+        const TeamScoreboard = ({ players }) => {
+            const totals = useMemo(() => {
+                const base = () => ({ lp: 0, wins: 0, losses: 0, count: 0 });
+                const res = { rouge: base(), bleu: base() };
+                players.forEach(p => {
+                    if (!res[p.team]) return;
+                    res[p.team].lp += Number(p.lpDelta) || 0;
+                    res[p.team].wins += Number(p.wins) || 0;
+                    res[p.team].losses += Number(p.losses) || 0;
+                    res[p.team].count += 1;
+                });
+                return res;
+            }, [players]);
+
+            if (totals.rouge.count === 0 && totals.bleu.count === 0) return null;
+
+            const r = totals.rouge.lp, b = totals.bleu.lp;
+            // Barre de domination : basée sur l'écart, centrée à 50 %
+            const span = Math.max(Math.abs(r), Math.abs(b), 1);
+            const redShare = Math.min(95, Math.max(5, 50 + ((r - b) / (2 * span)) * 50));
+            const leader = r === b ? null : (r > b ? 'rouge' : 'bleu');
+
+            const side = (key) => {
+                const t = TEAMS[key], s = totals[key];
+                const wr = calculateWR(s.wins, s.losses);
+                return (
+                    <div className={`flex-1 rounded-2xl border p-5 bg-zinc-900/60 ${t.border} ${leader === key ? t.glow : ''} ${key === 'bleu' ? 'text-right' : ''}`}>
+                        <div className={`flex items-center gap-2 font-heading font-bold uppercase tracking-wider text-sm ${t.text} ${key === 'bleu' ? 'justify-end' : ''}`}>
+                            <Shield size={15} /> {t.label}
+                            {leader === key && <Trophy size={14} className="text-zinc-100" />}
+                        </div>
+                        <div className={`font-heading font-black text-4xl mt-1 ${s.lp >= 0 ? 'text-white' : 'text-red-300'}`}>
+                            {formatLP(s.lp)} <span className="text-base font-semibold text-zinc-400">LP</span>
+                        </div>
+                        <div className="text-xs text-zinc-400 mt-1">
+                            {s.count} joueur{s.count > 1 ? 's' : ''} · {s.wins}V / {s.losses}D · <span className={wr >= 50 ? 'text-emerald-400' : 'text-red-400'}>{wr}% WR</span>
+                        </div>
+                    </div>
+                );
+            };
+
+            return (
+                <div className="mb-10">
+                    <div className="flex flex-col sm:flex-row gap-3 items-stretch">
+                        {side('rouge')}
+                        <div className="flex items-center justify-center font-heading font-black text-zinc-500 text-xl px-2">
+                            <Swords size={22} />
+                        </div>
+                        {side('bleu')}
+                    </div>
+                    <div className="mt-3 h-2 rounded-full overflow-hidden flex bg-zinc-800">
+                        <div className={`${TEAMS.rouge.bar} transition-all duration-700`} style={{ width: `${redShare}%` }}></div>
+                        <div className={`${TEAMS.bleu.bar} transition-all duration-700`} style={{ width: `${100 - redShare}%` }}></div>
+                    </div>
+                </div>
+            );
+        };
+
         const RankBadge = ({ rank = 'Unranked' }) => {
             const colors = {
                 Challenger: 'bg-amber-400/10 text-amber-300 border-amber-400/40',
@@ -120,10 +192,10 @@
                 Emerald: 'bg-emerald-400/10 text-emerald-300 border-emerald-400/40',
                 Platinum: 'bg-teal-400/10 text-teal-300 border-teal-400/40',
                 Gold: 'bg-yellow-500/10 text-yellow-300 border-yellow-500/40',
-                Silver: 'bg-slate-300/10 text-slate-300 border-slate-300/40',
+                Silver: 'bg-zinc-300/10 text-zinc-300 border-zinc-300/40',
                 Bronze: 'bg-amber-700/10 text-amber-500 border-amber-700/40',
                 Iron: 'bg-zinc-500/10 text-zinc-400 border-zinc-500/40',
-                Unranked: 'bg-slate-800 text-slate-500 border-slate-700'
+                Unranked: 'bg-zinc-800 text-zinc-500 border-zinc-700'
             };
             const style = colors[rank] || colors['Unranked'];
             return (
@@ -164,9 +236,9 @@
                         { label: 'M', val: timeLeft.m },
                         { label: 'S', val: timeLeft.s }
                     ].map((item, idx) => (
-                        <div key={idx} className="bg-slate-900/80 border border-slate-800 rounded-lg px-2.5 py-1.5 min-w-[42px]">
-                            <div className="text-lg font-bold font-heading text-purple-400 leading-tight">{String(item.val).padStart(2, '0')}</div>
-                            <div className="text-[10px] text-slate-500 font-semibold">{item.label}</div>
+                        <div key={idx} className="bg-zinc-900/80 border border-zinc-800 rounded-lg px-2.5 py-1.5 min-w-[42px]">
+                            <div className="text-lg font-bold font-heading text-zinc-400 leading-tight">{String(item.val).padStart(2, '0')}</div>
+                            <div className="text-[10px] text-zinc-500 font-semibold">{item.label}</div>
                         </div>
                     ))}
                 </div>
@@ -181,7 +253,7 @@
                 if (!player) return null;
                 const wr = calculateWR(player.wins || 0, player.losses || 0);
                 return (
-                    <div className={`relative bg-gradient-to-b from-[#161c28] to-[#0f131c] rounded-2xl p-5 border flex flex-col items-center ${glowClass} transition-transform hover:-translate-y-1`}>
+                    <div className={`relative bg-zinc-900 rounded-2xl p-5 border flex flex-col items-center ${glowClass} transition-transform hover:-translate-y-1`}>
                         <div className={`absolute -top-3.5 px-3 py-0.5 rounded-full text-xs font-bold font-heading uppercase tracking-wider flex items-center gap-1 ${crownColor}`}>
                             <Trophy size={13} /> {place}
                         </div>
@@ -189,18 +261,19 @@
                             <img 
                                 src={player.profileImg || 'https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/profile-icons/29.jpg'} 
                                 alt={player.playerName}
-                                className="w-20 h-20 rounded-full object-cover border-2 border-slate-700 shadow-lg"
+                                className="w-20 h-20 rounded-full object-cover border-2 border-zinc-700 shadow-lg"
                             />
                             <div className="absolute -bottom-1 -right-1">
                                 <RankBadge rank={player.rank} />
                             </div>
                         </div>
                         <h4 className="font-heading text-xl font-bold text-white tracking-wide">{player.playerName}</h4>
-                        <span className="text-xs font-mono text-slate-400 mb-3">{player.riotId}</span>
-                        <div className="text-2xl font-black font-heading text-yellow-400 mb-2">
-                            {player.lpDelta > 0 ? `+${player.lpDelta}` : player.lpDelta || 0} <span className="text-sm font-semibold text-slate-400">LP</span>
+                        <span className="text-xs font-mono text-zinc-400 mb-2">{player.riotId}</span>
+                        {player.team && <div className="mb-2"><TeamTag team={player.team} /></div>}
+                        <div className="text-2xl font-black font-heading text-zinc-100 mb-2">
+                            {player.lpDelta > 0 ? `+${player.lpDelta}` : player.lpDelta || 0} <span className="text-sm font-semibold text-zinc-400">LP</span>
                         </div>
-                        <div className="w-full pt-3 border-t border-slate-800 flex justify-between text-xs text-slate-400">
+                        <div className="w-full pt-3 border-t border-zinc-800 flex justify-between text-xs text-zinc-400">
                             <span>{player.wins || 0}V - {player.losses || 0}D</span>
                             <span className={wr >= 50 ? 'text-emerald-400 font-bold' : 'text-red-400 font-bold'}>{wr}% WR</span>
                         </div>
@@ -210,56 +283,64 @@
 
             return (
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-10 items-end">
-                    <div className="order-2 md:order-1">{renderCard(second, '2e place', 'silver-glow border-slate-500/40', 'bg-slate-300 text-slate-950')}</div>
-                    <div className="order-1 md:order-2 -mt-4">{renderCard(first, '1ère place', 'gold-glow border-yellow-500/50 scale-105', 'bg-yellow-400 text-yellow-950 shadow-lg')}</div>
-                    <div className="order-3 md:order-3">{renderCard(third, '3e place', 'bronze-glow border-amber-700/40', 'bg-amber-600 text-white')}</div>
+                    <div className="order-2 md:order-1">{renderCard(second, '2e place', 'border-zinc-700', 'bg-zinc-400 text-zinc-950')}</div>
+                    <div className="order-1 md:order-2 -mt-4">{renderCard(first, '1ère place', 'border-zinc-500 scale-105', 'bg-zinc-100 text-zinc-900')}</div>
+                    <div className="order-3 md:order-3">{renderCard(third, '3e place', 'border-zinc-700', 'bg-zinc-600 text-zinc-100')}</div>
                 </div>
             );
         };
 
-        const Leaderboard = ({ players, onUpdatePlayer, isAdmin, onRequestDelete }) => {
-            const [editingId, setEditingId] = useState(null);
-            const [editForm, setEditForm] = useState({});
+        const Leaderboard = ({ players, isAdmin, onRequestDelete, onRequestEdit }) => {
             const [search, setSearch] = useState('');
+            const [teamFilter, setTeamFilter] = useState('all');
 
             const sorted = useMemo(() => {
                 return [...players].sort((a, b) => (b.lpDelta || 0) - (a.lpDelta || 0));
             }, [players]);
 
             const filtered = useMemo(() => {
-                return sorted.filter(p => 
-                    p.playerName.toLowerCase().includes(search.toLowerCase()) || 
-                    p.riotId.toLowerCase().includes(search.toLowerCase())
+                const s = search.toLowerCase();
+                return sorted.filter(p =>
+                    (teamFilter === 'all' || (teamFilter === 'none' ? !p.team : p.team === teamFilter)) &&
+                    ((p.playerName || '').toLowerCase().includes(s) || (p.riotId || '').toLowerCase().includes(s))
                 );
-            }, [sorted, search]);
+            }, [sorted, search, teamFilter]);
 
             const top3 = sorted.slice(0, 3);
 
             return (
                 <div className="space-y-6">
+                    <TeamScoreboard players={players} />
                     <Podium top3={top3} />
 
                     <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
                         <div>
                             <h2 className="text-2xl font-bold font-heading text-white flex items-center gap-2">
-                                <Flame className="text-orange-500" /> Classement en direct
+                                <Flame className="text-zinc-400" /> Classement en direct
                             </h2>
-                            <p className="text-xs text-slate-400 mt-0.5">Trié selon la progression absolue en LP depuis le coup d'envoi.</p>
+                            <p className="text-xs text-zinc-400 mt-0.5">Trié selon la progression absolue en LP depuis le coup d'envoi.</p>
                         </div>
-                        <input 
-                            type="text" 
-                            placeholder="Rechercher un streamer / joueur..." 
-                            value={search}
-                            onChange={e => setSearch(e.target.value)}
-                            className="bg-[#121722] border border-slate-700/70 rounded-xl px-4 py-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-purple-500 w-full sm:w-64"
-                        />
+                        <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
+                            <div className="flex bg-zinc-900 border border-zinc-700/70 rounded-xl p-1 text-xs font-heading font-bold uppercase">
+                                {[['all', 'Tous', 'text-zinc-200'], ['rouge', 'Rouge', 'text-red-400'], ['bleu', 'Bleu', 'text-blue-400']].map(([k, label, color]) => (
+                                    <button key={k} onClick={() => setTeamFilter(k)} className={`flex-1 px-3 py-1 rounded-lg transition ${teamFilter === k ? 'bg-zinc-700 ' + color : 'text-zinc-500 hover:text-zinc-300'}`}>{label}</button>
+                                ))}
+                            </div>
+                            <input
+                                type="text"
+                                placeholder="Rechercher un streamer / joueur..."
+                                value={search}
+                                onChange={e => setSearch(e.target.value)}
+                                className="bg-zinc-900 border border-zinc-700/70 rounded-xl px-4 py-2 text-sm text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-zinc-500 w-full sm:w-64"
+                            />
+                        </div>
                     </div>
 
-                    <div className="bg-[#10141d]/90 rounded-2xl border border-slate-800 shadow-2xl overflow-hidden backdrop-blur-sm">
+                    <div className="bg-zinc-900/60 rounded-2xl border border-zinc-800 shadow-2xl overflow-hidden backdrop-blur-sm">
                         <div className="overflow-x-auto">
                             <table className="w-full text-left border-collapse min-w-[760px]">
                                 <thead>
-                                    <tr className="bg-[#0b0e15] text-[11px] font-heading uppercase text-slate-400 border-b border-slate-800 tracking-wider">
+                                    <tr className="bg-zinc-950 text-[11px] font-heading uppercase text-zinc-400 border-b border-zinc-800 tracking-wider">
                                         <th className="py-4 px-4 text-center w-14">#</th>
                                         <th className="py-4 px-4">Participant</th>
                                         <th className="py-4 px-4">Rang actuel</th>
@@ -269,40 +350,41 @@
                                         {isAdmin && <th className="py-4 px-4 text-center w-20">Admin</th>}
                                     </tr>
                                 </thead>
-                                <tbody className="divide-y divide-slate-800/60 text-sm">
+                                <tbody className="divide-y divide-zinc-800/60 text-sm">
                                     {filtered.length === 0 && (
-                                        <tr><td colSpan="7" className="py-12 text-center text-slate-500 italic">Aucun participant ne correspond à la recherche.</td></tr>
+                                        <tr><td colSpan="7" className="py-12 text-center text-zinc-500 italic">Aucun participant ne correspond à la recherche.</td></tr>
                                     )}
                                     {filtered.map((player, idx) => {
                                         const rankIndex = sorted.findIndex(p => p.id === player.id);
                                         const wr = calculateWR(player.wins || 0, player.losses || 0);
-                                        const isEditing = editingId === player.id;
+                                        const teamBorder = player.team === 'rouge' ? 'border-l-4 border-l-red-500/70' : player.team === 'bleu' ? 'border-l-4 border-l-blue-500/70' : 'border-l-4 border-l-transparent';
 
                                         return (
-                                            <tr key={player.id} className="hover:bg-slate-800/30 transition-colors">
+                                            <tr key={player.id} className={`hover:bg-zinc-800/30 transition-colors ${teamBorder}`}>
                                                 <td className="py-3.5 px-4 text-center font-heading font-bold text-base">
-                                                    {rankIndex === 0 ? <span className="text-yellow-400">1</span> :
-                                                     rankIndex === 1 ? <span className="text-slate-300">2</span> :
-                                                     rankIndex === 2 ? <span className="text-amber-600">3</span> :
-                                                     <span className="text-slate-500">{rankIndex + 1}</span>}
+                                                    {rankIndex === 0 ? <span className="text-zinc-100">1</span> :
+                                                     rankIndex === 1 ? <span className="text-zinc-300">2</span> :
+                                                     rankIndex === 2 ? <span className="text-zinc-500">3</span> :
+                                                     <span className="text-zinc-500">{rankIndex + 1}</span>}
                                                 </td>
                                                 <td className="py-3.5 px-4">
                                                     <div className="flex items-center gap-3">
                                                         <img 
                                                             src={player.profileImg || 'https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/profile-icons/29.jpg'} 
-                                                            className="w-10 h-10 rounded-full object-cover border border-slate-700" 
+                                                            className="w-10 h-10 rounded-full object-cover border border-zinc-700" 
                                                             alt=""
                                                         />
                                                         <div>
-                                                            <div className="font-bold text-slate-100 flex items-center gap-2">
+                                                            <div className="font-bold text-zinc-100 flex items-center gap-2">
                                                                 {player.playerName}
                                                                 {player.twitchUrl && (
-                                                                    <a href={player.twitchUrl} target="_blank" rel="noreferrer" className="text-purple-400 hover:text-purple-300">
+                                                                    <a href={player.twitchUrl} target="_blank" rel="noreferrer" className="text-[#9146FF] hover:text-[#a970ff]">
                                                                         <Twitch size={13} />
                                                                     </a>
                                                                 )}
+                                                                <TeamTag team={player.team} />
                                                             </div>
-                                                            <div className="text-xs font-mono text-slate-400">{player.riotId}</div>
+                                                            <div className="text-xs font-mono text-zinc-400">{player.riotId}</div>
                                                         </div>
                                                     </div>
                                                 </td>
@@ -310,27 +392,30 @@
                                                     <RankBadge rank={player.rank} />
                                                 </td>
                                                 <td className="py-3.5 px-4 text-center">
-                                                    <span className={`font-heading font-bold text-lg ${player.lpDelta >= 0 ? 'text-yellow-400' : 'text-red-400'}`}>
+                                                    <span className={`font-heading font-bold text-lg ${player.lpDelta >= 0 ? 'text-zinc-100' : 'text-red-400'}`}>
                                                         {player.lpDelta > 0 ? `+${player.lpDelta}` : player.lpDelta || 0} LP
                                                     </span>
                                                 </td>
                                                 <td className="py-3.5 px-4">
                                                     <div className="max-w-[120px] mx-auto text-center">
                                                         <span className={`text-xs font-bold ${wr >= 50 ? 'text-emerald-400' : 'text-red-400'}`}>{wr}%</span>
-                                                        <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden mt-1">
+                                                        <div className="w-full bg-zinc-800 h-1.5 rounded-full overflow-hidden mt-1">
                                                             <div className={`h-full ${wr >= 50 ? 'bg-emerald-500' : 'bg-red-500'}`} style={{ width: `${wr}%` }}></div>
                                                         </div>
                                                     </div>
                                                 </td>
                                                 <td className="py-3.5 px-4 text-center font-medium text-xs">
                                                     <span className="text-emerald-400 font-bold">{player.wins || 0}V</span>
-                                                    <span className="text-slate-600 mx-1.5">/</span>
+                                                    <span className="text-zinc-600 mx-1.5">/</span>
                                                     <span className="text-red-400 font-bold">{player.losses || 0}D</span>
                                                 </td>
                                                 {isAdmin && (
                                                     <td className="py-3.5 px-4 text-center">
                                                         <div className="flex justify-center gap-1">
-                                                            <button onClick={() => onRequestDelete(player)} className="p-1.5 text-slate-500 hover:text-red-400 transition">
+                                                            <button onClick={() => onRequestEdit(player)} title="Modifier" className="p-1.5 text-zinc-500 hover:text-zinc-400 transition">
+                                                                <Edit2 size={15} />
+                                                            </button>
+                                                            <button onClick={() => onRequestDelete(player)} title="Supprimer" className="p-1.5 text-zinc-500 hover:text-red-400 transition">
                                                                 <X size={15} />
                                                             </button>
                                                         </div>
@@ -352,43 +437,44 @@
                 <div className="space-y-6">
                     <div>
                         <h2 className="text-2xl font-bold font-heading text-white flex items-center gap-2">
-                            <Users className="text-purple-400" /> Les Participants ({players.length})
+                            <Users className="text-zinc-400" /> Les Participants ({players.length})
                         </h2>
-                        <p className="text-xs text-slate-400 mt-0.5">Accède directement aux profils OP.GG et aux chaînes Twitch officielles.</p>
+                        <p className="text-xs text-zinc-400 mt-0.5">Accède directement aux profils OP.GG et aux chaînes Twitch officielles.</p>
                     </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
                         {players.map(player => {
                             const wr = calculateWR(player.wins || 0, player.losses || 0);
                             return (
-                                <div key={player.id} className="bg-[#111622] border border-slate-800 rounded-2xl p-5 hover:border-purple-500/40 transition-all flex flex-col justify-between">
+                                <div key={player.id} className="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 hover:border-zinc-600 transition-all flex flex-col justify-between">
                                     <div>
                                         <div className="flex items-start justify-between mb-4">
                                             <div className="flex items-center gap-3">
                                                 <img 
                                                     src={player.profileImg || 'https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/profile-icons/29.jpg'} 
                                                     alt="" 
-                                                    className="w-14 h-14 rounded-full object-cover border-2 border-slate-700"
+                                                    className="w-14 h-14 rounded-full object-cover border-2 border-zinc-700"
                                                 />
                                                 <div>
                                                     <h3 className="font-heading text-xl font-bold text-white">{player.playerName}</h3>
-                                                    <span className="text-xs font-mono text-slate-400">{player.riotId}</span>
+                                                    <span className="text-xs font-mono text-zinc-400">{player.riotId}</span>
+                                                    {player.team && <div className="mt-1"><TeamTag team={player.team} /></div>}
                                                 </div>
                                             </div>
                                             <RankBadge rank={player.rank} />
                                         </div>
 
-                                        <div className="grid grid-cols-2 gap-2 bg-[#0b0e15] p-3 rounded-xl border border-slate-800/80 mb-4 text-center">
+                                        <div className="grid grid-cols-2 gap-2 bg-zinc-950 p-3 rounded-xl border border-zinc-800/80 mb-4 text-center">
                                             <div>
-                                                <div className="text-[10px] text-slate-500 uppercase font-heading">Progression</div>
-                                                <div className="font-heading text-lg font-bold text-yellow-400">
+                                                <div className="text-[10px] text-zinc-500 uppercase font-heading">Progression</div>
+                                                <div className="font-heading text-lg font-bold text-zinc-100">
                                                     {player.lpDelta > 0 ? `+${player.lpDelta}` : player.lpDelta || 0} LP
                                                 </div>
                                             </div>
                                             <div>
-                                                <div className="text-[10px] text-slate-500 uppercase font-heading">Ratio V/D</div>
-                                                <div className="font-heading text-lg font-bold text-slate-200">
-                                                    {player.wins || 0}W <span className="text-xs text-slate-500 font-normal">/</span> {player.losses || 0}L
+                                                <div className="text-[10px] text-zinc-500 uppercase font-heading">Ratio V/D</div>
+                                                <div className="font-heading text-lg font-bold text-zinc-200">
+                                                    {player.wins || 0}W <span className="text-xs text-zinc-500 font-normal">/</span> {player.losses || 0}L
                                                 </div>
                                             </div>
                                         </div>
@@ -399,7 +485,7 @@
                                             href={`https://www.op.gg/summoners/euw/${encodeURIComponent(player.riotId.replace('#', '-'))}`} 
                                             target="_blank" 
                                             rel="noreferrer"
-                                            className="flex-1 bg-blue-600/10 hover:bg-blue-600/20 text-blue-400 border border-blue-500/30 rounded-xl py-2 px-3 text-xs font-bold font-heading flex items-center justify-center gap-1.5 transition"
+                                            className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 rounded-xl py-2 px-3 text-xs font-bold font-heading flex items-center justify-center gap-1.5 transition"
                                         >
                                             <Gamepad2 size={14} /> OP.GG
                                         </a>
@@ -408,9 +494,9 @@
                                                 href={player.twitchUrl} 
                                                 target="_blank" 
                                                 rel="noreferrer"
-                                                className="flex-1 bg-purple-600/10 hover:bg-purple-600/20 text-purple-300 border border-purple-500/30 rounded-xl py-2 px-3 text-xs font-bold font-heading flex items-center justify-center gap-1.5 transition"
+                                                className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 rounded-xl py-2 px-3 text-xs font-bold font-heading flex items-center justify-center gap-1.5 transition"
                                             >
-                                                <Twitch size={14} /> Twitch
+                                                <Twitch size={14} className="text-[#9146FF]" /> Twitch
                                             </a>
                                         )}
                                     </div>
@@ -422,42 +508,217 @@
             );
         };
 
+        const HistoryView = ({ history, players }) => {
+            const [playerFilter, setPlayerFilter] = useState('all');
+            const [teamFilter, setTeamFilter] = useState('all');
+
+            const playerById = useMemo(() => Object.fromEntries(players.map(p => [p.id, p])), [players]);
+
+            const filtered = useMemo(() => history.filter(h => {
+                if (h.type === 'reset') return playerFilter === 'all' && teamFilter === 'all';
+                const p = playerById[h.playerId];
+                const team = p?.team ?? h.team;
+                if (playerFilter !== 'all' && h.playerId !== playerFilter) return false;
+                if (teamFilter !== 'all' && team !== teamFilter) return false;
+                return true;
+            }), [history, playerFilter, teamFilter, playerById]);
+
+            const resultBadge = (h) => {
+                const w = h.winsGained || 0, l = h.lossesGained || 0;
+                if (w === 1 && l === 0) return <span className="px-2 py-0.5 rounded-md text-[11px] font-heading font-bold uppercase bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">Victoire</span>;
+                if (l === 1 && w === 0) return <span className="px-2 py-0.5 rounded-md text-[11px] font-heading font-bold uppercase bg-red-500/15 text-red-400 border border-zinc-800">Défaite</span>;
+                if (w || l) return <span className="px-2 py-0.5 rounded-md text-[11px] font-heading font-bold uppercase bg-zinc-700/50 text-zinc-300 border border-zinc-600">{w}V / {l}D</span>;
+                return <span className="px-2 py-0.5 rounded-md text-[11px] font-heading font-bold uppercase bg-zinc-700/50 text-zinc-400 border border-zinc-600">Ajustement</span>;
+            };
+
+            return (
+                <div className="max-w-4xl mx-auto space-y-6">
+                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-end gap-4">
+                        <div>
+                            <h2 className="text-2xl font-bold font-heading text-white flex items-center gap-2">
+                                <History className="text-zinc-400" /> Historique des parties
+                            </h2>
+                            <p className="text-xs text-zinc-400 mt-0.5">Chaque variation de LP détectée à la synchronisation, pour tous les joueurs.</p>
+                        </div>
+                        <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
+                            <select value={teamFilter} onChange={e => setTeamFilter(e.target.value)} className="bg-zinc-900 border border-zinc-700/70 rounded-xl px-3 py-2 text-sm text-zinc-200">
+                                <option value="all">Toutes les équipes</option>
+                                <option value="rouge">Équipe Rouge</option>
+                                <option value="bleu">Équipe Bleue</option>
+                            </select>
+                            <select value={playerFilter} onChange={e => setPlayerFilter(e.target.value)} className="bg-zinc-900 border border-zinc-700/70 rounded-xl px-3 py-2 text-sm text-zinc-200">
+                                <option value="all">Tous les joueurs</option>
+                                {[...players].sort((a, b) => (a.playerName || '').localeCompare(b.playerName || '')).map(p => (
+                                    <option key={p.id} value={p.id}>{p.playerName}</option>
+                                ))}
+                            </select>
+                        </div>
+                    </div>
+
+                    <div className="bg-zinc-900/60 rounded-2xl border border-zinc-800 divide-y divide-zinc-800/60 overflow-hidden">
+                        {filtered.length === 0 && (
+                            <div className="py-12 text-center text-zinc-500 italic text-sm">Aucune entrée pour l'instant. L'historique se remplit à chaque synchronisation.</div>
+                        )}
+                        {filtered.map(h => {
+                            if (h.type === 'reset') {
+                                return (
+                                    <div key={h.id} className="px-4 py-3 flex items-center gap-3 bg-zinc-800/40">
+                                        <RotateCcw size={16} className="text-zinc-400 shrink-0" />
+                                        <span className="text-sm text-zinc-300 font-heading font-bold uppercase tracking-wide">Compteurs LP réinitialisés</span>
+                                        <span className="ml-auto text-xs text-zinc-500">{formatDate(h.timestamp)}</span>
+                                    </div>
+                                );
+                            }
+                            const p = playerById[h.playerId];
+                            const team = p?.team ?? h.team;
+                            const change = Number(h.change) || 0;
+                            return (
+                                <div key={h.id} className={`px-4 py-3 flex flex-wrap items-center gap-x-4 gap-y-2 hover:bg-zinc-800/30 transition-colors border-l-4 ${team === 'rouge' ? 'border-l-red-500/70' : team === 'bleu' ? 'border-l-blue-500/70' : 'border-l-transparent'}`}>
+                                    <div className="flex items-center gap-3 min-w-[180px] flex-1">
+                                        <img src={p?.profileImg || DEFAULT_ICON} alt="" className="w-9 h-9 rounded-full object-cover border border-zinc-700" />
+                                        <div>
+                                            <div className="font-bold text-zinc-100 text-sm flex items-center gap-2">{p?.playerName || h.playerName} <TeamTag team={team} /></div>
+                                            <div className="text-[11px] text-zinc-500">{formatDate(h.timestamp)}</div>
+                                        </div>
+                                    </div>
+                                    <div>{resultBadge(h)}</div>
+                                    <div className="text-xs text-zinc-400 min-w-[150px]">
+                                        {h.rankBefore && h.rankBefore !== h.rankAfter ? <>{h.rankBefore} <ChevronRight size={11} className="inline" /> </> : null}
+                                        <span className="text-zinc-200">{h.rankAfter}</span>
+                                    </div>
+                                    <div className="text-right min-w-[110px]">
+                                        <div className={`font-heading font-bold text-lg leading-tight ${change > 0 ? 'text-emerald-400' : change < 0 ? 'text-red-400' : 'text-zinc-400'}`}>{formatLP(change)} LP</div>
+                                        <div className="text-[11px] text-zinc-500">Total : {formatLP(h.deltaAfter)} LP</div>
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
+            );
+        };
+
+        const PlayerEditModal = ({ player, onClose, onSave }) => {
+            const [form, setForm] = useState({
+                playerName: player.playerName || '',
+                riotId: player.riotId || '',
+                twitchUrl: player.twitchUrl || '',
+                team: player.team || ''
+            });
+            const [saving, setSaving] = useState(false);
+            const riotIdChanged = form.riotId.trim() !== (player.riotId || '').trim();
+
+            const submit = async (e) => {
+                e.preventDefault();
+                setSaving(true);
+                try {
+                    const data = {
+                        playerName: form.playerName.trim(),
+                        riotId: form.riotId.trim(),
+                        twitchUrl: form.twitchUrl.trim(),
+                        team: form.team
+                    };
+                    // Nouveau compte Riot = on repart de zéro (le point de départ sera repris à la prochaine synchro)
+                    if (riotIdChanged) {
+                        Object.assign(data, { startAbsoluteLP: null, currentAbsoluteLP: null, lpDelta: 0, rank: 'Unranked', wins: 0, losses: 0 });
+                    }
+                    await onSave(player.id, data);
+                    onClose();
+                } finally {
+                    setSaving(false);
+                }
+            };
+
+            return (
+                <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
+                    <form onSubmit={submit} className="bg-zinc-900 p-6 rounded-2xl w-full max-w-md border border-zinc-700 shadow-2xl space-y-3">
+                        <div className="flex justify-between mb-1">
+                            <h3 className="font-heading font-bold text-lg text-white flex items-center gap-2"><Edit2 size={16} className="text-zinc-400" /> Modifier {player.playerName}</h3>
+                            <button type="button" onClick={onClose} className="text-zinc-400"><X size={18}/></button>
+                        </div>
+                        <label className="block text-xs text-zinc-400">Pseudo streamer
+                            <input required value={form.playerName} onChange={e => setForm({ ...form, playerName: e.target.value })} className="mt-1 w-full bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-2.5 text-sm text-white" />
+                        </label>
+                        <label className="block text-xs text-zinc-400">Riot ID (Nom#TAG)
+                            <input required value={form.riotId} onChange={e => setForm({ ...form, riotId: e.target.value })} className="mt-1 w-full bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-2.5 text-sm text-white" />
+                        </label>
+                        {riotIdChanged && <p className="text-[11px] text-amber-400">⚠️ Changer de Riot ID remet ce joueur à 0 LP : son point de départ sera pris à la prochaine synchro.</p>}
+                        <label className="block text-xs text-zinc-400">URL Twitch
+                            <input value={form.twitchUrl} onChange={e => setForm({ ...form, twitchUrl: e.target.value })} className="mt-1 w-full bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-2.5 text-sm text-white" />
+                        </label>
+                        <TeamPicker value={form.team} onChange={team => setForm({ ...form, team })} />
+                        <div className="flex gap-3 pt-2">
+                            <button type="button" onClick={onClose} className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-white font-heading font-bold py-2.5 rounded-xl text-sm">Annuler</button>
+                            <button type="submit" disabled={saving} className="flex-1 bg-zinc-100 hover:bg-white text-zinc-900 font-heading font-bold py-2.5 rounded-xl text-sm disabled:opacity-50">{saving ? 'Enregistrement...' : 'Enregistrer'}</button>
+                        </div>
+                    </form>
+                </div>
+            );
+        };
+
+        const TeamPicker = ({ value, onChange }) => (
+            <div>
+                <div className="text-xs text-zinc-400 mb-1">Équipe</div>
+                <div className="grid grid-cols-3 gap-2">
+                    {[['', 'Aucune', 'border-zinc-600 text-zinc-300 bg-zinc-700/40'], ['rouge', 'Rouge', 'border-red-500 text-red-300 bg-red-500/15'], ['bleu', 'Bleu', 'border-blue-500 text-blue-300 bg-blue-500/15']].map(([k, label, active]) => (
+                        <button key={k || 'none'} type="button" onClick={() => onChange(k)} className={`py-2 rounded-xl border text-sm font-heading font-bold uppercase transition ${value === k ? active : 'border-zinc-700 text-zinc-500 hover:text-zinc-300'}`}>
+                            {label}
+                        </button>
+                    ))}
+                </div>
+            </div>
+        );
+
         const RulesView = ({ config }) => {
             return (
                 <div className="max-w-4xl mx-auto space-y-6">
                     <div className="text-center mb-8">
                         <h2 className="text-3xl font-black font-heading text-white tracking-wide">Règlement officiel</h2>
-                        <p className="text-slate-400 text-sm mt-1">Modalités, conditions de victoire et dotations du tournoi.</p>
+                        <p className="text-zinc-400 text-sm mt-1">Modalités, conditions de victoire et dotations du tournoi.</p>
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        <div className="bg-[#111622] p-6 rounded-2xl border border-slate-800">
-                            <h3 className="font-heading text-lg font-bold text-purple-400 flex items-center gap-2 mb-3">
+                        <div className="bg-zinc-900 p-6 rounded-2xl border border-zinc-800">
+                            <h3 className="font-heading text-lg font-bold text-zinc-400 flex items-center gap-2 mb-3">
                                 <Award size={18} /> Règles de la course
                             </h3>
-                            <div className="text-slate-300 text-sm whitespace-pre-wrap leading-relaxed">
+                            <div className="text-zinc-300 text-sm whitespace-pre-wrap leading-relaxed">
                                 {config?.rulesText || "1. SoloQ uniquement en file classée 5v5.\n2. Le vainqueur est celui ayant cumulé le plus de LP nets.\n3. Fair-play obligatoire, tout comportement sanctionné par Riot entraîne la disqualification."}
                             </div>
                         </div>
 
-                        <div className="bg-[#111622] p-6 rounded-2xl border border-slate-800">
-                            <h3 className="font-heading text-lg font-bold text-yellow-400 flex items-center gap-2 mb-3">
+                        <div className="bg-zinc-900 p-6 rounded-2xl border border-zinc-800">
+                            <h3 className="font-heading text-lg font-bold text-zinc-100 flex items-center gap-2 mb-3">
                                 <Trophy size={18} /> Récompenses & Gages
                             </h3>
-                            <div className="text-slate-300 text-sm whitespace-pre-wrap leading-relaxed">
+                            <div className="text-zinc-300 text-sm whitespace-pre-wrap leading-relaxed">
                                 {config?.prizesText || "🏆 Vainqueur : Cashprize & Gloire éternelle\n🥈 2ème place : Dotation Riot Points\n💀 Dernier : Gage imposé en live par la commu !"}
                             </div>
+                            <div className="mt-4 pt-4 border-t border-zinc-800 text-zinc-300 text-sm leading-relaxed space-y-1.5">
+                                <div>💀 Le dernier du classement reçoit un gage choisi par le premier.</div>
+                                <div>⚔️ L'équipe perdante reçoit un gage choisi par l'équipe gagnante.</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="bg-zinc-900 p-6 rounded-2xl border border-zinc-800">
+                        <h3 className="font-heading text-lg font-bold text-zinc-100 flex items-center gap-2 mb-3">
+                            <Swords size={18} /> Gages
+                        </h3>
+                        <div className="text-zinc-300 text-sm leading-relaxed space-y-2">
+                            <p>💀 <span className="font-bold text-zinc-100">Le dernier du classement</span> reçoit un gage choisi par le premier.</p>
+                            <p>🛡️ <span className="font-bold text-zinc-100">L'équipe perdante</span> (compteur global d'équipe le plus bas) reçoit un gage choisi par l'autre équipe.</p>
                         </div>
                     </div>
                 </div>
             );
         };
 
-        const AdminPanel = ({ players, onAddPlayer, onUpdatePlayer }) => {
-            const [apiKey, setApiKey] = useState(localStorage.getItem('riotApiKey') || '');
+        const AdminPanel = ({ players, onAddPlayer, onUpdatePlayer, onAddHistory, onRequestEdit, onRequestReset }) => {
+            const [apiKey, setApiKey] = useState(() => { try { return localStorage.getItem('riotApiKey') || ''; } catch { return ''; } });
             const [status, setStatus] = useState('');
             const [loading, setLoading] = useState(false);
-            const [playerForm, setPlayerForm] = useState({ playerName: '', riotId: '', twitchUrl: '' });
+            const [playerForm, setPlayerForm] = useState({ playerName: '', riotId: '', twitchUrl: '', team: '' });
 
             const handleSync = async () => {
                 if (!apiKey.trim()) return setStatus("❌ Clé API Riot requise.");
@@ -481,26 +742,53 @@
                         if (!legRes.ok) throw new Error(legData.error || `Erreur League (${legRes.status})`);
 
                         const soloQ = Array.isArray(legData) ? legData.find(q => q.queueType === 'RANKED_SOLO_5x5') : null;
-                        let rankStr = 'Unranked', wins = 0, losses = 0, currentAbsLP = 0;
+                        let rankStr = 'Unranked', rankLabel = 'Unranked', wins = 0, losses = 0, currentAbsLP = 0;
                         const iconUrl = `https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/profile-icons/${sumData.profileIconId}.jpg`;
 
                         if (soloQ) {
                             rankStr = soloQ.tier.charAt(0).toUpperCase() + soloQ.tier.slice(1).toLowerCase();
+                            const isApex = ['MASTER', 'GRANDMASTER', 'CHALLENGER'].includes(soloQ.tier.toUpperCase());
+                            rankLabel = `${rankStr}${isApex ? '' : ' ' + soloQ.rank} · ${soloQ.leaguePoints} LP`;
                             wins = soloQ.wins;
                             losses = soloQ.losses;
                             currentAbsLP = calculateAbsoluteLP(soloQ.tier, soloQ.rank, soloQ.leaguePoints);
                         }
 
                         let startLP = p.startAbsoluteLP ?? currentAbsLP;
+                        const newDelta = currentAbsLP - startLP;
+
+                        // Historique : on enregistre seulement s'il y a eu du mouvement depuis la dernière synchro
+                        const hasPrevious = p.currentAbsoluteLP !== undefined && p.currentAbsoluteLP !== null;
+                        if (hasPrevious) {
+                            const change = currentAbsLP - p.currentAbsoluteLP;
+                            const winsGained = Math.max(0, wins - (p.wins || 0));
+                            const lossesGained = Math.max(0, losses - (p.losses || 0));
+                            if (change !== 0 || winsGained > 0 || lossesGained > 0) {
+                                await onAddHistory({
+                                    type: 'game',
+                                    playerId: p.id,
+                                    playerName: p.playerName,
+                                    team: p.team || '',
+                                    timestamp: Date.now(),
+                                    change,
+                                    winsGained,
+                                    lossesGained,
+                                    rankBefore: p.rankLabel || p.rank || 'Unranked',
+                                    rankAfter: rankLabel,
+                                    deltaAfter: newDelta
+                                });
+                            }
+                        }
 
                         await onUpdatePlayer(p.id, {
                             rank: rankStr,
+                            rankLabel,
                             wins,
                             losses,
                             profileImg: iconUrl,
                             startAbsoluteLP: startLP,
                             currentAbsoluteLP: currentAbsLP,
-                            lpDelta: currentAbsLP - startLP
+                            lpDelta: newDelta
                         });
                         success++;
                         await new Promise(r => setTimeout(r, 200));
@@ -515,35 +803,37 @@
             const submitPlayer = async (e) => {
                 e.preventDefault();
                 await onAddPlayer({ ...playerForm, rank: 'Unranked', lpDelta: 0, wins: 0, losses: 0 });
-                setPlayerForm({ playerName: '', riotId: '', twitchUrl: '' });
+                setPlayerForm({ playerName: '', riotId: '', twitchUrl: '', team: '' });
             };
+
+            const sortedPlayers = [...players].sort((a, b) => (a.playerName || '').localeCompare(b.playerName || ''));
 
             return (
                 <div className="max-w-3xl mx-auto space-y-8">
-                    <div className="bg-[#111622] p-6 rounded-2xl border border-purple-500/30">
+                    <div className="bg-zinc-900 p-6 rounded-2xl border border-zinc-800">
                         <h3 className="font-heading text-xl font-bold text-white flex items-center gap-2 mb-4">
-                            <Settings className="text-purple-400" /> Riot API Tracker
+                            <Settings className="text-zinc-400" /> Riot API Tracker
                         </h3>
                         <div className="flex gap-3 mb-4">
                             <input 
                                 type="password" 
                                 placeholder="RGAPI-XXXXXXXX-XXXX-..." 
                                 value={apiKey} 
-                                onChange={e => { setApiKey(e.target.value); localStorage.setItem('riotApiKey', e.target.value); }}
-                                className="flex-1 bg-[#0b0e15] border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white"
+                                onChange={e => { setApiKey(e.target.value); try { localStorage.setItem('riotApiKey', e.target.value); } catch {} }}
+                                className="flex-1 bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-2.5 text-sm text-white"
                             />
                             <button 
                                 onClick={handleSync} 
                                 disabled={loading}
-                                className="bg-purple-600 hover:bg-purple-500 text-white font-heading font-bold px-6 py-2.5 rounded-xl transition disabled:opacity-50"
+                                className="bg-zinc-100 hover:bg-white text-zinc-900 font-heading font-bold px-6 py-2.5 rounded-xl transition disabled:opacity-50"
                             >
                                 {loading ? 'Sync...' : 'Synchroniser'}
                             </button>
                         </div>
-                        {status && <pre className="p-3 bg-black/40 rounded-lg text-xs font-mono text-slate-300 whitespace-pre-wrap">{status}</pre>}
+                        {status && <pre className="p-3 bg-black/40 rounded-lg text-xs font-mono text-zinc-300 whitespace-pre-wrap">{status}</pre>}
                     </div>
 
-                    <form onSubmit={submitPlayer} className="bg-[#111622] p-6 rounded-2xl border border-slate-800">
+                    <form onSubmit={submitPlayer} className="bg-zinc-900 p-6 rounded-2xl border border-zinc-800">
                         <h3 className="font-heading text-xl font-bold text-white flex items-center gap-2 mb-4">
                             <UserPlus className="text-emerald-400" /> Inscrire un compétiteur
                         </h3>
@@ -553,26 +843,61 @@
                                 placeholder="Pseudo streamer" 
                                 value={playerForm.playerName}
                                 onChange={e => setPlayerForm({...playerForm, playerName: e.target.value})}
-                                className="bg-[#0b0e15] border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white"
+                                className="bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-2.5 text-sm text-white"
                             />
                             <input 
                                 required 
                                 placeholder="Riot ID (Nom#TAG)" 
                                 value={playerForm.riotId}
                                 onChange={e => setPlayerForm({...playerForm, riotId: e.target.value})}
-                                className="bg-[#0b0e15] border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white"
+                                className="bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-2.5 text-sm text-white"
                             />
                             <input 
                                 placeholder="URL Twitch (optionnel)" 
                                 value={playerForm.twitchUrl}
                                 onChange={e => setPlayerForm({...playerForm, twitchUrl: e.target.value})}
-                                className="bg-[#0b0e15] border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-white"
+                                className="bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-2.5 text-sm text-white"
                             />
                         </div>
-                        <button type="submit" className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-heading font-bold py-2.5 rounded-xl transition">
+                        <div className="mb-4">
+                            <TeamPicker value={playerForm.team} onChange={team => setPlayerForm({ ...playerForm, team })} />
+                        </div>
+                        <button type="submit" className="w-full bg-zinc-100 hover:bg-white text-zinc-900 font-heading font-bold py-2.5 rounded-xl transition">
                             Ajouter au challenge
                         </button>
                     </form>
+
+                    <div className="bg-zinc-900 p-6 rounded-2xl border border-zinc-800">
+                        <h3 className="font-heading text-xl font-bold text-white flex items-center gap-2 mb-4">
+                            <Users className="text-zinc-400" /> Gérer les joueurs ({players.length})
+                        </h3>
+                        {sortedPlayers.length === 0 && <p className="text-sm text-zinc-500 italic">Aucun joueur inscrit.</p>}
+                        <div className="divide-y divide-zinc-800/70">
+                            {sortedPlayers.map(p => (
+                                <div key={p.id} className="flex items-center gap-3 py-2.5">
+                                    <img src={p.profileImg || DEFAULT_ICON} alt="" className="w-9 h-9 rounded-full object-cover border border-zinc-700" />
+                                    <div className="flex-1 min-w-0">
+                                        <div className="font-bold text-zinc-100 text-sm flex items-center gap-2 flex-wrap">{p.playerName} <TeamTag team={p.team} /></div>
+                                        <div className="text-xs font-mono text-zinc-500 truncate">{p.riotId}</div>
+                                    </div>
+                                    <div className={`font-heading font-bold text-sm ${(p.lpDelta || 0) >= 0 ? 'text-zinc-100' : 'text-red-400'}`}>{formatLP(p.lpDelta)} LP</div>
+                                    <button onClick={() => onRequestEdit(p)} className="flex items-center gap-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-heading font-bold uppercase px-3 py-1.5 rounded-lg transition">
+                                        <Edit2 size={13} /> Modifier
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+
+                    <div className="bg-zinc-900 p-6 rounded-2xl border border-zinc-800">
+                        <h3 className="font-heading text-xl font-bold text-white flex items-center gap-2 mb-2">
+                            <RotateCcw className="text-zinc-400" /> Réinitialiser les compteurs LP
+                        </h3>
+                        <p className="text-xs text-zinc-400 mb-4">Remet la progression de tous les joueurs (et donc des équipes) à 0 LP. Le rang actuel de chacun devient le nouveau point de départ.</p>
+                        <button onClick={onRequestReset} className="w-full bg-red-600/90 hover:bg-red-500 text-white font-heading font-bold py-2.5 rounded-xl transition flex items-center justify-center gap-2">
+                            <RotateCcw size={16} /> Réinitialiser
+                        </button>
+                    </div>
                 </div>
             );
         };
@@ -586,6 +911,11 @@
             const [showLogin, setShowLogin] = useState(false);
             const [pwd, setPwd] = useState('');
             const [toDelete, setToDelete] = useState(null);
+            const [toEdit, setToEdit] = useState(null);
+            const [history, setHistory] = useState([]);
+            const [showReset, setShowReset] = useState(false);
+            const [clearHistory, setClearHistory] = useState(false);
+            const [resetting, setResetting] = useState(false);
 
             useEffect(() => {
                 if (!auth) return;
@@ -601,14 +931,52 @@
                 const unsubC = onSnapshot(doc(db, 'config', 'main'), snap => {
                     if (snap.exists()) setConfig(snap.data());
                 });
-                return () => { unsubP(); unsubC(); };
+                const unsubH = onSnapshot(
+                    query(collection(db, 'history'), orderBy('timestamp', 'desc'), limit(500)),
+                    snap => setHistory(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
+                    err => console.error('Historique :', err)
+                );
+                return () => { unsubP(); unsubC(); unsubH(); };
             }, [user]);
 
             const crud = {
                 add: async data => addDoc(collection(db, 'players'), data),
                 update: async (id, data) => updateDoc(doc(db, 'players', id), data),
                 del: async id => deleteDoc(doc(db, 'players', id)),
-                updateConfig: async data => setDoc(doc(db, 'config', 'main'), data, { merge: true })
+                updateConfig: async data => setDoc(doc(db, 'config', 'main'), data, { merge: true }),
+                addHistory: async data => addDoc(collection(db, 'history'), data)
+            };
+
+            // Remet tous les compteurs LP à 0 : le LP actuel devient le nouveau point de départ
+            const resetLP = async () => {
+                setResetting(true);
+                try {
+                    const batch = writeBatch(db);
+                    players.forEach(p => {
+                        batch.update(doc(db, 'players', p.id), {
+                            startAbsoluteLP: p.currentAbsoluteLP ?? null,
+                            lpDelta: 0
+                        });
+                    });
+                    await batch.commit();
+
+                    if (clearHistory) {
+                        const snap = await getDocs(collection(db, 'history'));
+                        for (let i = 0; i < snap.docs.length; i += 400) {
+                            const b = writeBatch(db);
+                            snap.docs.slice(i, i + 400).forEach(d => b.delete(d.ref));
+                            await b.commit();
+                        }
+                    }
+                    await crud.addHistory({ type: 'reset', timestamp: Date.now() });
+                    setShowReset(false);
+                    setClearHistory(false);
+                } catch (e) {
+                    console.error(e);
+                    alert('Erreur pendant la réinitialisation : ' + e.message);
+                } finally {
+                    setResetting(false);
+                }
             };
 
             const stats = useMemo(() => {
@@ -619,34 +987,35 @@
             return (
                 <div className="flex flex-col min-h-screen">
                     {/* Header soloqchallenge.fr style */}
-                    <header className="border-b border-slate-800/80 bg-[#0c1017]/90 backdrop-blur-md sticky top-0 z-40">
+                    <header className="border-b border-zinc-800/80 bg-zinc-950/90 backdrop-blur-md sticky top-0 z-40">
                         <div className="max-w-7xl mx-auto px-4 py-3 flex flex-wrap justify-between items-center gap-4">
                             <div className="flex items-center gap-6">
                                 <div className="flex items-center gap-2">
-                                    <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-purple-500 to-blue-600 flex items-center justify-center font-heading font-black text-white text-lg shadow-md">
+                                    <div className="w-8 h-8 rounded-lg bg-zinc-100 flex items-center justify-center font-heading font-black text-zinc-900 text-lg">
                                         SQ
                                     </div>
-                                    <span className="font-heading font-black text-2xl tracking-wider text-transparent bg-clip-text bg-gradient-to-r from-purple-400 via-pink-400 to-yellow-400">
+                                    <span className="font-heading font-black text-2xl tracking-wider text-zinc-100">
                                         SOLOQ CHALLENGE
                                     </span>
                                 </div>
-                                <div className="hidden lg:flex items-center gap-4 text-xs font-heading uppercase text-slate-400 pl-6 border-l border-slate-800">
+                                <div className="hidden lg:flex items-center gap-4 text-xs font-heading uppercase text-zinc-400 pl-6 border-l border-zinc-800">
                                     <div>Participants : <span className="text-white font-bold">{stats.count}</span></div>
-                                    <div>Parties jouées : <span className="text-purple-400 font-bold">{stats.totalGames}</span></div>
+                                    <div>Parties jouées : <span className="text-zinc-400 font-bold">{stats.totalGames}</span></div>
                                 </div>
                             </div>
 
-                            <nav className="flex items-center gap-1.5 bg-[#121722] p-1 rounded-xl border border-slate-800">
-                                <button onClick={() => setTab('classement')} className={`px-4 py-1.5 rounded-lg text-xs font-heading font-bold uppercase transition ${tab === 'classement' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-white'}`}>Classement</button>
-                                <button onClick={() => setTab('joueurs')} className={`px-4 py-1.5 rounded-lg text-xs font-heading font-bold uppercase transition ${tab === 'joueurs' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-white'}`}>Joueurs</button>
-                                <button onClick={() => setTab('reglement')} className={`px-4 py-1.5 rounded-lg text-xs font-heading font-bold uppercase transition ${tab === 'reglement' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-white'}`}>Règles</button>
-                                {isAdmin && <button onClick={() => setTab('admin')} className={`px-4 py-1.5 rounded-lg text-xs font-heading font-bold uppercase transition ${tab === 'admin' ? 'bg-amber-600 text-white' : 'text-slate-400 hover:text-white'}`}>Admin</button>}
+                            <nav className="flex flex-wrap items-center gap-1.5 bg-zinc-900 p-1 rounded-xl border border-zinc-800">
+                                <button onClick={() => setTab('classement')} className={`px-4 py-1.5 rounded-lg text-xs font-heading font-bold uppercase transition ${tab === 'classement' ? 'bg-zinc-100 text-zinc-900' : 'text-zinc-400 hover:text-white'}`}>Classement</button>
+                                <button onClick={() => setTab('joueurs')} className={`px-4 py-1.5 rounded-lg text-xs font-heading font-bold uppercase transition ${tab === 'joueurs' ? 'bg-zinc-100 text-zinc-900' : 'text-zinc-400 hover:text-white'}`}>Joueurs</button>
+                                <button onClick={() => setTab('historique')} className={`px-4 py-1.5 rounded-lg text-xs font-heading font-bold uppercase transition ${tab === 'historique' ? 'bg-zinc-100 text-zinc-900' : 'text-zinc-400 hover:text-white'}`}>Historique</button>
+                                <button onClick={() => setTab('reglement')} className={`px-4 py-1.5 rounded-lg text-xs font-heading font-bold uppercase transition ${tab === 'reglement' ? 'bg-zinc-100 text-zinc-900' : 'text-zinc-400 hover:text-white'}`}>Règles</button>
+                                {isAdmin && <button onClick={() => setTab('admin')} className={`px-4 py-1.5 rounded-lg text-xs font-heading font-bold uppercase transition ${tab === 'admin' ? 'bg-zinc-100 text-zinc-900' : 'text-zinc-400 hover:text-white'}`}>Admin</button>}
                                 
-                                <div className="w-px h-4 bg-slate-700 mx-1"></div>
+                                <div className="w-px h-4 bg-zinc-700 mx-1"></div>
                                 {isAdmin ? (
                                     <button onClick={() => setIsAdmin(false)} className="px-2 py-1 text-red-400 text-xs font-heading font-bold">Quitter</button>
                                 ) : (
-                                    <button onClick={() => setShowLogin(true)} className="p-1.5 text-slate-500 hover:text-white transition"><Lock size={14}/></button>
+                                    <button onClick={() => setShowLogin(true)} className="p-1.5 text-zinc-500 hover:text-white transition"><Lock size={14}/></button>
                                 )}
                             </nav>
                         </div>
@@ -654,35 +1023,45 @@
 
                     {/* Main content */}
                     <main className="max-w-7xl mx-auto px-4 py-8 flex-1 w-full">
-                        {tab === 'classement' && <Leaderboard players={players} onUpdatePlayer={crud.update} isAdmin={isAdmin} onRequestDelete={setToDelete} />}
+                        {tab === 'classement' && <Leaderboard players={players} isAdmin={isAdmin} onRequestDelete={setToDelete} onRequestEdit={setToEdit} />}
                         {tab === 'joueurs' && <PlayersList players={players} />}
+                        {tab === 'historique' && <HistoryView history={history} players={players} />}
                         {tab === 'reglement' && <RulesView config={config} />}
-                        {tab === 'admin' && isAdmin && <AdminPanel players={players} onAddPlayer={crud.add} onUpdatePlayer={crud.update} />}
+                        {tab === 'admin' && isAdmin && (
+                            <AdminPanel
+                                players={players}
+                                onAddPlayer={crud.add}
+                                onUpdatePlayer={crud.update}
+                                onAddHistory={crud.addHistory}
+                                onRequestEdit={setToEdit}
+                                onRequestReset={() => setShowReset(true)}
+                            />
+                        )}
                     </main>
 
                     {/* Footer */}
-                    <footer className="border-t border-slate-800/80 bg-[#090c12] py-6 text-center text-xs text-slate-500">
+                    <footer className="border-t border-zinc-800/80 bg-zinc-950 py-6 text-center text-xs text-zinc-500">
                         SoloQ Challenge — Plateforme non affiliée à Riot Games. Données synchronisées via l'API Riot Games.
                     </footer>
 
                     {/* Admin Modal */}
                     {showLogin && (
                         <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
-                            <div className="bg-[#111622] p-6 rounded-2xl w-full max-w-sm border border-slate-700 shadow-2xl">
+                            <div className="bg-zinc-900 p-6 rounded-2xl w-full max-w-sm border border-zinc-700 shadow-2xl">
                                 <div className="flex justify-between mb-4">
                                     <h3 className="font-heading font-bold text-lg text-white">Accès Organisateur</h3>
-                                    <button onClick={() => setShowLogin(false)} className="text-slate-400"><X size={18}/></button>
+                                    <button onClick={() => setShowLogin(false)} className="text-zinc-400"><X size={18}/></button>
                                 </div>
                                 <input 
                                     type="password" 
                                     value={pwd} 
                                     onChange={e => setPwd(e.target.value)} 
                                     placeholder="Mot de passe admin" 
-                                    className="w-full bg-[#0b0e15] border border-slate-700 rounded-xl px-4 py-2.5 mb-4 text-white text-sm"
+                                    className="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-4 py-2.5 mb-4 text-white text-sm"
                                 />
                                 <button 
                                     onClick={() => { if (pwd === 'Hussein180690') { setIsAdmin(true); setShowLogin(false); setPwd(''); } }} 
-                                    className="w-full bg-purple-600 hover:bg-purple-500 text-white font-heading font-bold py-2.5 rounded-xl transition"
+                                    className="w-full bg-zinc-100 hover:bg-white text-zinc-900 font-heading font-bold py-2.5 rounded-xl transition"
                                 >
                                     Déverrouiller
                                 </button>
@@ -690,14 +1069,38 @@
                         </div>
                     )}
 
+                    {/* Edit Modal */}
+                    {toEdit && isAdmin && (
+                        <PlayerEditModal player={toEdit} onClose={() => setToEdit(null)} onSave={crud.update} />
+                    )}
+
+                    {/* Reset Modal */}
+                    {showReset && isAdmin && (
+                        <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
+                            <div className="bg-zinc-900 p-6 rounded-2xl w-full max-w-sm border border-zinc-700 text-center">
+                                <RotateCcw className="mx-auto text-zinc-400 mb-2" size={28} />
+                                <h3 className="font-heading font-bold text-lg text-white mb-2">Réinitialiser les compteurs LP ?</h3>
+                                <p className="text-xs text-zinc-400 mb-4">Tous les joueurs et les deux équipes repartent à 0 LP à partir de leur rang actuel.</p>
+                                <label className="flex items-center justify-center gap-2 text-xs text-zinc-300 mb-6 cursor-pointer">
+                                    <input type="checkbox" checked={clearHistory} onChange={e => setClearHistory(e.target.checked)} className="accent-red-500" />
+                                    Vider aussi l'historique
+                                </label>
+                                <div className="flex gap-3">
+                                    <button onClick={() => { setShowReset(false); setClearHistory(false); }} className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-white font-heading font-bold py-2 rounded-xl text-sm">Annuler</button>
+                                    <button onClick={resetLP} disabled={resetting} className="flex-1 bg-red-600 hover:bg-red-500 text-white font-heading font-bold py-2 rounded-xl text-sm disabled:opacity-50">{resetting ? 'En cours...' : 'Réinitialiser'}</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
                     {/* Delete Modal */}
                     {toDelete && (
                         <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
-                            <div className="bg-[#111622] p-6 rounded-2xl w-full max-w-sm border border-slate-700 text-center">
+                            <div className="bg-zinc-900 p-6 rounded-2xl w-full max-w-sm border border-zinc-700 text-center">
                                 <h3 className="font-heading font-bold text-lg text-white mb-2">Retirer {toDelete.playerName} ?</h3>
-                                <p className="text-xs text-slate-400 mb-6">Cette action est définitive et supprimera ses stats du classement.</p>
+                                <p className="text-xs text-zinc-400 mb-6">Cette action est définitive et supprimera ses stats du classement.</p>
                                 <div className="flex gap-3">
-                                    <button onClick={() => setToDelete(null)} className="flex-1 bg-slate-800 hover:bg-slate-700 text-white font-heading font-bold py-2 rounded-xl text-sm">Annuler</button>
+                                    <button onClick={() => setToDelete(null)} className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-white font-heading font-bold py-2 rounded-xl text-sm">Annuler</button>
                                     <button onClick={() => { crud.del(toDelete.id); setToDelete(null); }} className="flex-1 bg-red-600 hover:bg-red-500 text-white font-heading font-bold py-2 rounded-xl text-sm">Supprimer</button>
                                 </div>
                             </div>
