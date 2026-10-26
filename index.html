@@ -692,7 +692,7 @@
                                 <Trophy size={18} /> Récompenses & Gages
                             </h3>
                             <div className="text-zinc-300 text-sm whitespace-pre-wrap leading-relaxed">
-                                {config?.prizesText || "🏆 Vainqueur : Cashprize & Gloire éternelle\n🥈 2ème place : Dotation Riot Points\n💀 Dernier : Gage imposé en live par la commu !"}
+                                {(config?.prizesText || "🏆 Vainqueur : Cashprize & Gloire éternelle\n🥈 2ème place : Dotation Riot Points").split('\n').filter(l => !/^\s*💀\s*Dernier/i.test(l)).join('\n')}
                             </div>
                             <div className="mt-4 pt-4 border-t border-zinc-800 text-zinc-300 text-sm leading-relaxed space-y-1.5">
                                 <div>💀 Le dernier du classement reçoit un gage choisi par le premier.</div>
