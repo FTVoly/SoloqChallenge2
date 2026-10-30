@@ -773,8 +773,10 @@
             const statuses = {};
 
             players.forEach(pl => {
-                const ms = gamesOf(pl.id);
-                const mine = purchases.filter(x => x.buyerId === pl.id);
+                // Remise à zéro des points : seules les parties lancées et les achats faits après comptent
+                const since = pl.shopResetAt || 0;
+                const ms = gamesOf(pl.id).filter(g => startOf(g) >= since);
+                const mine = purchases.filter(x => x.buyerId === pl.id && (x.createdAt || 0) >= since);
                 const shields = mine.filter(x => x.kind === 'shield').sort((a, b) => a.createdAt - b.createdAt);
 
                 // Un bouclier protège la 1re partie lancée APRÈS son achat
@@ -1322,7 +1324,32 @@
             );
         };
 
-        const AdminPanel = ({ testMode, onToggleTestMode, players, matches, config, onUpdateConfig, pendingDoubles, onSetMatchLp, onAddPlayer, onUpdatePlayer, onSaveMatch, onRequestEdit, onRequestReset }) => {
+        const ShopReset = ({ players, onResetShop }) => {
+            const [who, setWho] = useState('all');
+            const [busy, setBusy] = useState(false);
+            const go = async () => {
+                const name = who === 'all' ? 'tous les joueurs' : players.find(p => p.id === who)?.playerName;
+                if (!window.confirm(`Remettre à 0 les points de la boutique de ${name} ? Seules les parties lancées à partir de maintenant compteront.`)) return;
+                setBusy(true);
+                try { await onResetShop(who === 'all' ? null : who); } catch (e) { alert('Erreur : ' + e.message); }
+                setBusy(false);
+            };
+            return (
+                <div className="bg-zinc-900 p-6 rounded-2xl border border-zinc-800">
+                    <h3 className="font-heading text-xl font-bold text-white flex items-center gap-2 mb-2"><RotateCcw className="text-zinc-400" /> Réinitialiser les points boutique</h3>
+                    <p className="text-xs text-zinc-400 mb-4">Remet le solde de points à 0 (tous les joueurs ou un seul). Les parties et achats passés ne comptent plus ; les limites du jour (1 bonus, 1 malus) et les LP ne changent pas.</p>
+                    <div className="flex flex-col sm:flex-row gap-2">
+                        <select value={who} onChange={e => setWho(e.target.value)} className="flex-1 bg-zinc-950 border border-zinc-700/70 rounded-xl px-3 py-2 text-sm text-zinc-200">
+                            <option value="all">Tous les joueurs</option>
+                            {[...players].sort((a, b) => (a.playerName || '').localeCompare(b.playerName || '')).map(p => <option key={p.id} value={p.id}>{p.playerName}</option>)}
+                        </select>
+                        <button onClick={go} disabled={busy} className="bg-red-600/90 hover:bg-red-500 text-white font-heading font-bold px-5 py-2 rounded-xl text-sm disabled:opacity-50">{busy ? 'En cours...' : 'Remettre à 0'}</button>
+                    </div>
+                </div>
+            );
+        };
+
+        const AdminPanel = ({ testMode, onToggleTestMode, players, matches, config, onUpdateConfig, pendingDoubles, onSetMatchLp, onAddPlayer, onUpdatePlayer, onSaveMatch, onRequestEdit, onRequestReset, onResetShop }) => {
             const [apiKey, setApiKey] = useState(() => { try { return localStorage.getItem('riotApiKey') || ''; } catch { return ''; } });
             const [status, setStatus] = useState('');
             const [loading, setLoading] = useState(false);
@@ -1550,6 +1577,8 @@
                     <PricesEditor config={config} onUpdateConfig={onUpdateConfig} />
                     <DoubleValidator items={pendingDoubles || []} onSetMatchLp={onSetMatchLp} />
 
+                    <ShopReset players={players} onResetShop={onResetShop} />
+
                     <div className="bg-zinc-900 p-6 rounded-2xl border border-zinc-800">
                         <h3 className="font-heading text-xl font-bold text-white flex items-center gap-2 mb-2">
                             <RotateCcw className="text-zinc-400" /> Réinitialiser les compteurs LP
@@ -1670,6 +1699,13 @@
                 }
             };
 
+            const resetShopPoints = async (playerId) => {
+                const batch = writeBatch(db);
+                const now = Date.now();
+                players.filter(p => !playerId || p.id === playerId).forEach(p => batch.update(doc(db, 'players', p.id), { shopResetAt: now }));
+                await batch.commit();
+            };
+
             // Remet tous les compteurs LP à 0 : le LP actuel devient le nouveau point de départ
             const resetLP = async () => {
                 setResetting(true);
@@ -1781,6 +1817,7 @@
                                 onSetMatchLp={(id, lp) => crud.updateHistoryDoc(id, { lpChange: lp })}
                                 onRequestEdit={setToEdit}
                                 onRequestReset={() => setShowReset(true)}
+                                onResetShop={resetShopPoints}
                             />
                         )}
                     </main>
