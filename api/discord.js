@@ -19,14 +19,21 @@ export default async function handler(req, res) {
   const kind = body.kind;
   const mode = body.mode === 'gain' ? 'gain' : 'drain';
 
-  if (!buyer || !['ban', 'shield', 'double', 'spells', 'lpmove'].includes(kind)) {
+  if (!buyer || !['ban', 'shield', 'double', 'spells', 'lpmove', 'cancel'].includes(kind)) {
     return res.status(400).json({ error: 'Requête invalide' });
   }
 
   const BONUS = 0x3b82f6; // bleu : bonus pour soi
   const MALUS = 0xef4444; // rouge : malus sur un adversaire
+  const label = String(body.label ?? '').slice(0, 80).replace(/[@`*_~|>\\]/g, '').trim();
   let embed;
-  if (kind === 'ban') {
+  if (kind === 'cancel') {
+    embed = {
+      title: '↩️ Achat annulé',
+      description: `L'achat de **${buyer}**${label ? ` (${label})` : ''} a été annulé par l'organisateur. Les points sont remboursés.`,
+      color: 0x71717a,
+    };
+  } else if (kind === 'ban') {
     const target = clean(body.targetName);
     const champion = clean(body.championName);
     if (!target || !champion) return res.status(400).json({ error: 'Requête invalide' });
@@ -70,8 +77,13 @@ export default async function handler(req, res) {
       color: BONUS,
     };
   }
+  const prefix = body.test === true ? 'TEST · ' : '';
   const isBonus = kind === 'shield' || kind === 'double' || (kind === 'lpmove' && mode === 'gain');
-  embed.footer = { text: `${isBonus ? 'Bonus' : 'Malus'} · ${price} pts · SoloQ Challenge` };
+  embed.footer = {
+    text: kind === 'cancel'
+      ? `${prefix}Remboursé · ${price} pts · SoloQ Challenge`
+      : `${prefix}${isBonus ? 'Bonus' : 'Malus'} · ${price} pts · SoloQ Challenge`,
+  };
   embed.timestamp = new Date().toISOString();
 
   try {

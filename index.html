@@ -52,7 +52,7 @@
             Trophy, Swords, Flame, ShieldAlert, Award, Clock, Users, 
             ExternalLink, Settings, UserPlus, Edit2, Check, X, Lock, 
             Twitch, Gamepad2, ArrowUpRight, ChevronRight, Sparkles,
-            RotateCcw, History, Shield, ShoppingBag, Ban, Coins, Dices, ArrowLeftRight, Zap, Skull
+            RotateCcw, History, Shield, ShoppingBag, Ban, Coins, Dices, ArrowLeftRight, Zap, Skull, Trash2
         } from 'lucide-react';
         import { initializeApp } from 'firebase/app';
         import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
@@ -725,6 +725,16 @@
         const POINTS = { kill: 1, win: 3, deathsPerPenalty: 2 }; // 1 kill = +1 · victoire = +3 · toutes les 2 morts = -1
         const PRICES = { shield: 10, ban: 15 };
 
+        // Identifiant du marqueur « 1 bonus / 1 malus par jour » d'un achat (sert à l'achat ET à l'annulation)
+        const limitDocId = (x) => `limit_${x.buyerId}_${x.day || parisDay(x.createdAt)}_${x.category || categoryOf(x.kind, x.mode)}`;
+        const purchaseLabel = (x) => ({
+            ban: `ban de ${x.championName} pour ${x.targetName}`,
+            shield: 'bouclier',
+            double: 'quitte ou double',
+            spells: `summoners inversés pour ${x.targetName}`,
+            lpmove: x.mode === 'gain' ? `+${LPMOVE_LP} LP` : `−${LPMOVE_LP} LP à ${x.targetName}`
+        }[x.kind] || 'achat');
+
         // Calcule les points de chaque joueur + le statut de chaque achat, uniquement à partir des parties et des achats enregistrés
         const computeShop = (players, matches, purchases) => {
             const startOf = (m) => m.gameCreation || ((m.timestamp || 0) - (m.duration || 0) * 1000);
@@ -882,7 +892,7 @@
             </div>
         );
 
-        const ShopView = ({ players, matches, purchases, effects, prices, onBuy }) => {
+        const ShopView = ({ players, matches, purchases, effects, prices, onBuy, isAdmin, testMode, onCancel }) => {
             const version = useDdragonVersion();
             const [buyerId, setBuyerId] = useState(() => { try { return localStorage.getItem('shopBuyer') || ''; } catch { return ''; } });
             const [targetId, setTargetId] = useState('');
@@ -908,6 +918,7 @@
             const board = useMemo(() => [...players].sort((a, b) => (byPlayer[b.id]?.balance ?? 0) - (byPlayer[a.id]?.balance ?? 0)), [players, byPlayer]);
             const sortedPlayers = useMemo(() => [...players].sort((a, b) => (a.playerName || '').localeCompare(b.playerName || '')), [players]);
 
+            const free = !!isAdmin && !!testMode; // mode test : points infinis, achats gratuits
             const buyer = players.find(p => p.id === buyerId);
             const target = players.find(p => p.id === targetId);
             const balance = buyer ? (byPlayer[buyer.id]?.balance ?? 0) : 0;
@@ -934,7 +945,7 @@
                 if (kind === 'ban' && !champ) return fail('Choisis le champion à bannir.');
                 if (kind === 'lpmove' && lpmoveUsed) return fail(`Tu as déjà utilisé ton coup de ${LPMOVE_LP} LP (une seule fois dans tout le challenge).`);
                 if (slotUsed(cat)) return fail(`Tu as déjà acheté ton ${cat} aujourd'hui (1 ${cat} par jour).`);
-                if (balance < price) return fail(`Il te faut ${price} points (tu en as ${balance}).`);
+                if (!free && balance < price) return fail(`Il te faut ${price} points (tu en as ${balance}).`);
                 const label = {
                     shield: 'Acheter un bouclier',
                     double: 'Jouer quitte ou double sur ta prochaine partie',
@@ -942,10 +953,10 @@
                     spells: `Inverser les summoners de ${target?.playerName}`,
                     lpmove: mode === 'gain' ? `Gagner ${LPMOVE_LP} LP (usage unique dans tout le challenge)` : `Faire perdre ${LPMOVE_LP} LP à ${target?.playerName} (usage unique dans tout le challenge)`
                 }[kind];
-                if (!window.confirm(`${label} ? (${price} points)`)) return;
+                if (!window.confirm(`${label} ? (${free ? 'mode test : gratuit' : price + ' points'})`)) return;
                 setBusy(true); setMsg(null);
                 try {
-                    await onBuy({ buyer, kind, mode, target: cat === 'malus' ? target : null, champ: kind === 'ban' ? champ : null, price });
+                    await onBuy({ buyer, kind, mode, target: cat === 'malus' ? target : null, champ: kind === 'ban' ? champ : null, price: free ? 0 : price, test: free });
                     if (kind === 'ban') { setChamp(null); setShowChamps(false); }
                     setMsg({ ok: true, text: 'Achat effectué !' + (['shield', 'double'].includes(kind) ? ' Lance ta partie après cet achat.' : '') });
                 } catch (e) {
@@ -953,6 +964,12 @@
                 } finally {
                     setBusy(false);
                 }
+            };
+
+            const cancel = async (x) => {
+                if (!window.confirm(`Annuler l'achat de ${x.buyerName} (${purchaseLabel(x)}) ?\nLes points sont remboursés et il peut racheter son ${categoryOf(x.kind, x.mode)} du jour.`)) return;
+                try { await onCancel(x, purchaseLabel(x)); setMsg({ ok: true, text: 'Achat annulé.' }); }
+                catch (e) { setMsg({ ok: false, text: e.message || 'Impossible d\'annuler cet achat.' }); }
             };
 
             const feed = [...purchases].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 30);
@@ -1004,6 +1021,7 @@
 
                     {/* Achats */}
                     <div className="bg-zinc-900 rounded-2xl border border-zinc-800 p-6 space-y-6">
+                        {free && <div className="text-xs rounded-xl px-4 py-2.5 border border-amber-500/40 bg-amber-500/10 text-amber-200">Mode test activé : points infinis, achats gratuits (marqués « TEST »). Les effets sont bien appliqués : annule les achats de test avec la corbeille dans « Derniers achats ».</div>}
                         <div className="flex flex-col sm:flex-row sm:items-end gap-3 justify-between">
                             <label className="block text-xs text-zinc-400 flex-1 max-w-xs">Acheter en tant que
                                 <select value={buyerId} onChange={e => chooseBuyer(e.target.value)} className="mt-1 w-full bg-zinc-950 border border-zinc-700 rounded-xl px-3 py-2.5 text-sm text-white">
@@ -1013,7 +1031,7 @@
                             </label>
                             {buyer && (
                                 <div className="text-sm text-zinc-400 space-y-1 sm:text-right">
-                                    <div>Ton solde : <span className={`font-heading font-black text-xl ${balance < 0 ? 'text-red-400' : 'text-white'}`}>{balance} pts</span></div>
+                                    <div>Ton solde : {free ? <span className="font-heading font-black text-xl text-amber-300">∞ pts</span> : <span className={`font-heading font-black text-xl ${balance < 0 ? 'text-red-400' : 'text-white'}`}>{balance} pts</span>}</div>
                                     <div className="text-xs">Aujourd'hui : bonus <b className={bonusUsed ? 'text-zinc-500' : 'text-emerald-400'}>{bonusUsed ? 'utilisé' : 'disponible'}</b> · malus <b className={malusUsed ? 'text-zinc-500' : 'text-emerald-400'}>{malusUsed ? 'utilisé' : 'disponible'}</b></div>
                                 </div>
                             )}
@@ -1094,9 +1112,12 @@
                                             {d && <div className={`text-xs ${d.tone}`}>{d.text}</div>}
                                         </div>
                                         <div className="text-right shrink-0">
-                                            <div className="text-xs font-bold text-zinc-300">−{x.price} pts</div>
+                                            <div className="text-xs font-bold text-zinc-300">{x.test ? <span className="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">TEST</span> : `−${x.price} pts`}</div>
                                             <div className="text-[11px] text-zinc-500">{formatDate(x.createdAt)}</div>
                                         </div>
+                                        {isAdmin && (
+                                            <button onClick={() => cancel(x)} title="Annuler cet achat" className="p-2 text-zinc-500 hover:text-red-400 transition shrink-0"><Trash2 size={16} /></button>
+                                        )}
                                     </div>
                                 );
                             })}
@@ -1272,7 +1293,7 @@
             );
         };
 
-        const AdminPanel = ({ players, matches, config, onUpdateConfig, pendingDoubles, onSetMatchLp, onAddPlayer, onUpdatePlayer, onSaveMatch, onRequestEdit, onRequestReset }) => {
+        const AdminPanel = ({ testMode, onToggleTestMode, players, matches, config, onUpdateConfig, pendingDoubles, onSetMatchLp, onAddPlayer, onUpdatePlayer, onSaveMatch, onRequestEdit, onRequestReset }) => {
             const [apiKey, setApiKey] = useState(() => { try { return localStorage.getItem('riotApiKey') || ''; } catch { return ''; } });
             const [status, setStatus] = useState('');
             const [loading, setLoading] = useState(false);
@@ -1407,6 +1428,18 @@
             return (
                 <div className="max-w-3xl mx-auto space-y-8">
                     <div className="bg-zinc-900 p-6 rounded-2xl border border-zinc-800">
+                        <h3 className="font-heading text-xl font-bold text-white flex items-center gap-2 mb-3">
+                            <Settings className="text-zinc-400" /> Paramètres
+                        </h3>
+                        <label className="flex items-start gap-3 cursor-pointer">
+                            <input type="checkbox" checked={!!testMode} onChange={e => onToggleTestMode(e.target.checked)} className="mt-1 w-4 h-4 accent-amber-400" />
+                            <span className="text-sm text-zinc-200">Mode admin / test : points infinis dans la boutique
+                                <span className="block text-xs text-zinc-500 mt-0.5">Tes achats sont gratuits et marqués « TEST ». Réglage propre à ce navigateur, actif seulement quand tu es connecté en organisateur. Les limites du jour (1 bonus, 1 malus) restent actives : annule un achat de test pour les libérer.</span>
+                            </span>
+                        </label>
+                    </div>
+
+                    <div className="bg-zinc-900 p-6 rounded-2xl border border-zinc-800">
                         <h3 className="font-heading text-xl font-bold text-white flex items-center gap-2 mb-4">
                             <Settings className="text-zinc-400" /> Riot API Tracker
                         </h3>
@@ -1513,6 +1546,8 @@
             const [toEdit, setToEdit] = useState(null);
             const [history, setHistory] = useState([]);
             const [purchases, setPurchases] = useState([]);
+            const [testMode, setTestMode] = useState(() => { try { return localStorage.getItem('shopTestMode') === '1'; } catch { return false; } });
+            const toggleTestMode = (v) => { setTestMode(v); try { localStorage.setItem('shopTestMode', v ? '1' : '0'); } catch {} };
             const [showReset, setShowReset] = useState(false);
             const [clearHistory, setClearHistory] = useState(false);
             const [resetting, setResetting] = useState(false);
@@ -1563,20 +1598,30 @@
                 updateConfig: async data => setDoc(doc(db, 'config', 'main'), data, { merge: true }),
                 saveMatch: async (id, data) => setDoc(doc(db, 'history', id), data),
                 updateHistoryDoc: async (id, data) => updateDoc(doc(db, 'history', id), data),
+                // Annulation d'un achat (admin) : supprime l'achat ET son marqueur « 1 bonus / 1 malus par jour »
+                // -> points remboursés, effet supprimé, le joueur peut racheter ; un ban/coup de LP redevient disponible
+                cancelPurchase: async (x, label) => {
+                    const b = writeBatch(db);
+                    b.delete(doc(db, 'history', x.id));
+                    b.delete(doc(db, 'history', limitDocId(x)));
+                    await b.commit();
+                    notifyDiscord({ kind: 'cancel', buyerName: x.buyerName, label, price: x.price || 0, test: !!x.test });
+                },
                 // Achat unique, vérifié dans une transaction :
                 //  - 1 bonus et 1 malus par jour et par joueur (document « limit »)
                 //  - un même champion ne se banne qu'une fois par jour pour un joueur
                 //  - le coup de pouce / sabotage de LP ne s'achète qu'une fois dans tout le challenge
-                buyItem: async ({ buyer, kind, mode, target, champ, price }) => {
+                buyItem: async ({ buyer, kind, mode, target, champ, price, test }) => {
                     const now = Date.now();
                     const day = parisDay(now);
                     const category = categoryOf(kind, mode);
-                    const limitRef = doc(db, 'history', `limit_${buyer.id}_${day}_${category}`);
+                    const limitRef = doc(db, 'history', limitDocId({ buyerId: buyer.id, day, category }));
                     const purchaseRef = kind === 'ban' ? doc(db, 'history', `ban_${target.id}_${champ.id}_${day}`)
                         : kind === 'lpmove' ? doc(db, 'history', `lpmove_${buyer.id}`)
                         : doc(collection(db, 'history'));
                     const data = { type: 'purchase', kind, buyerId: buyer.id, buyerName: buyer.playerName, price, category, day, createdAt: serverTimestamp(), timestamp: now };
                     if (mode) data.mode = mode;
+                    if (test) data.test = true;
                     if (target) { data.targetId = target.id; data.targetName = target.playerName; }
                     if (champ) { data.championKey = champ.id; data.championName = champ.name; }
 
@@ -1592,7 +1637,7 @@
                         tx.set(limitRef, { type: 'limit', buyerId: buyer.id, day, category, timestamp: now });
                         tx.set(purchaseRef, data);
                     });
-                    notifyDiscord({ kind, mode, buyerName: buyer.playerName, targetName: target?.playerName, championName: champ?.name, price });
+                    notifyDiscord({ kind, mode, buyerName: buyer.playerName, targetName: target?.playerName, championName: champ?.name, price, test: !!test });
                 }
             };
 
@@ -1689,7 +1734,7 @@
                         {tab === 'classement' && <Leaderboard players={playersView} isAdmin={isAdmin} onRequestDelete={setToDelete} onRequestEdit={setToEdit} />}
                         {tab === 'joueurs' && <PlayersList players={playersView} />}
                         {tab === 'historique' && <HistoryView history={history} players={playersView} />}
-                        {tab === 'boutique' && <ShopView players={playersView} matches={matchList} purchases={purchases} effects={effects} prices={prices} onBuy={crud.buyItem} />}
+                        {tab === 'boutique' && <ShopView players={playersView} matches={matchList} purchases={purchases} effects={effects} prices={prices} onBuy={crud.buyItem} isAdmin={isAdmin} testMode={testMode} onCancel={crud.cancelPurchase} />}
                         {tab === 'reglement' && <RulesView config={config} />}
                         {tab === 'admin' && isAdmin && (
                             <AdminPanel
@@ -1701,6 +1746,8 @@
                                 config={config}
                                 onUpdateConfig={crud.updateConfig}
                                 pendingDoubles={pendingDoubles}
+                                testMode={testMode}
+                                onToggleTestMode={toggleTestMode}
                                 onSetMatchLp={(id, lp) => crud.updateHistoryDoc(id, { lpChange: lp })}
                                 onRequestEdit={setToEdit}
                                 onRequestReset={() => setShowReset(true)}
