@@ -543,7 +543,7 @@
 
         const formatDuration = (sec) => `${Math.floor((sec || 0) / 60)} m ${String((sec || 0) % 60).padStart(2, '0')} s`;
 
-        const MatchRow = ({ h, player, version }) => {
+        const MatchRow = ({ h, player, version, shopFx = [] }) => {
             const win = !!h.win;
             const team = player?.team ?? h.team;
             const ddImg = (path) => `https://ddragon.leagueoflegends.com/cdn/${version}/img/${path}`;
@@ -563,7 +563,8 @@
             );
 
             return (
-                <div className={`rounded-xl border-l-4 px-4 py-3 flex flex-wrap lg:flex-nowrap items-center gap-x-6 gap-y-3 ${win ? 'bg-blue-500/10 border-l-blue-500' : 'bg-red-500/10 border-l-red-500'}`}>
+                <div className={`rounded-xl border-l-4 px-4 py-3 ${win ? 'bg-blue-500/10 border-l-blue-500' : 'bg-red-500/10 border-l-red-500'}`}>
+                  <div className="flex flex-wrap lg:flex-nowrap items-center gap-x-6 gap-y-3">
                     {/* Infos partie */}
                     <div className="w-40 shrink-0">
                         <div className="flex items-center gap-1.5 mb-1.5">
@@ -621,11 +622,24 @@
                         <div className="space-y-0.5 min-w-0">{allies.map(renderPart)}</div>
                         <div className="space-y-0.5 min-w-0">{enemies.map(renderPart)}</div>
                     </div>
+                  </div>
+                    {shopFx.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5 mt-3">
+                            {shopFx.map(f => (
+                                <span key={f.id} className="inline-flex items-center gap-1.5 text-[11px] rounded-lg border border-zinc-700 bg-zinc-900/80 px-2 py-1">
+                                    <span className="font-bold text-zinc-200">{f.title}</span>
+                                    <span className="text-zinc-500">· {f.by}</span>
+                                    {f.test && <span className="px-1 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 text-[9px] font-bold">TEST</span>}
+                                    {f.text && <span className={f.tone}>— {f.text}</span>}
+                                </span>
+                            ))}
+                        </div>
+                    )}
                 </div>
             );
         };
 
-        const HistoryView = ({ history, players }) => {
+        const HistoryView = ({ history, players, purchases = [], statuses = {} }) => {
             const [playerFilter, setPlayerFilter] = useState('all');
             const [teamFilter, setTeamFilter] = useState('all');
             const version = useDdragonVersion();
@@ -635,6 +649,20 @@
             const matches = useMemo(() => history
                 .filter(h => h.type === 'match')
                 .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)), [history]);
+
+            // Achats de la boutique appliqués à chaque partie (bouclier, quitte ou double, ban, summoners)
+            const fxByMatch = useMemo(() => {
+                const map = {};
+                const titles = { shield: '🛡️ Bouclier', double: '🎲 Quitte ou double', ban: '🚫 Ban', spells: '🔄 Summoners inversés' };
+                purchases.forEach(x => {
+                    const st = statuses[x.id];
+                    if (!st || !st.matchDocId || !titles[x.kind]) return;
+                    const d = describeStatus(x, st);
+                    const title = x.kind === 'ban' ? `${titles.ban} ${x.championName || x.championKey || ''}`.trim() : titles[x.kind];
+                    (map[st.matchDocId] = map[st.matchDocId] || []).push({ id: x.id, title, by: x.kind === 'shield' || x.kind === 'double' ? x.buyerName : `acheté par ${x.buyerName}`, test: x.test, text: d?.text, tone: d?.tone });
+                });
+                return map;
+            }, [purchases, statuses]);
 
             const filtered = useMemo(() => matches.filter(h => {
                 const p = playerById[h.playerId];
@@ -712,7 +740,7 @@
                                     </div>
                                 </div>
                                 {g.items.map(h => (
-                                    <MatchRow key={h.id} h={h} player={playerById[h.playerId]} version={version} />
+                                    <MatchRow key={h.id} h={h} player={playerById[h.playerId]} version={version} shopFx={fxByMatch[h.id] || []} />
                                 ))}
                             </div>
                         ))}
@@ -764,7 +792,7 @@
                     const pen = Math.floor((g.deaths || 0) / POINTS.deathsPerPenalty);
                     const sid = shielded[g.matchId];
                     if (sid && !g.win) saved += pen; else penalty += pen;
-                    if (sid) statuses[sid] = { state: 'used', win: !!g.win, saved: g.win ? 0 : pen };
+                    if (sid) statuses[sid] = { state: 'used', win: !!g.win, saved: g.win ? 0 : pen, matchDocId: g.id };
                 });
 
                 const spent = mine.reduce((acc, x) => acc + (x.price || 0), 0);
@@ -781,6 +809,7 @@
                 const game = gamesOf(b.targetId).find(g => startOf(g) >= b.createdAt);
                 statuses[b.id] = !game ? { state: 'pending' } : {
                     state: 'used',
+                    matchDocId: game.id,
                     played: game.championName,
                     violated: (game.championName || '').toLowerCase() === (b.championKey || '').toLowerCase()
                 };
@@ -815,7 +844,7 @@
                     if (!game) { statuses[d.id] = { state: 'pending' }; return; }
                     used[game.matchId] = true;
                     if (typeof game.lpChange === 'number') {
-                        statuses[d.id] = { state: 'applied', win: !!game.win, lp: game.lpChange };
+                        statuses[d.id] = { state: 'applied', win: !!game.win, lp: game.lpChange, matchDocId: game.id };
                         if (d.createdAt >= resetAt[pl.id]) lpAdjust[pl.id].qod += game.lpChange;
                     } else {
                         statuses[d.id] = { state: 'toverify', win: !!game.win, matchDocId: game.id };
@@ -843,7 +872,7 @@
                     if (a >= 0 && b >= 0) check = a !== b ? 'ok' : 'ko';
                 }
                 const played = (game.spells || []).map(id => SPELL_NAMES[id] || '?').join(' / ');
-                statuses[sp.id] = { state: 'used', check, played };
+                statuses[sp.id] = { state: 'used', check, played, matchDocId: game.id };
             });
 
             Object.values(lpAdjust).forEach(a => { a.total = a.qod + a.moves; });
@@ -1681,6 +1710,7 @@
                 const adj = effects.lpAdjust[p.id]?.total || 0;
                 return { ...p, lpAdjust: adj, lpDelta: (p.lpDelta || 0) + adj };
             }), [players, effects]);
+            const allStatuses = useMemo(() => ({ ...computeShop(players, matchList, purchases).statuses, ...effects.statuses }), [players, matchList, purchases, effects]);
             const prices = useMemo(() => ({ ...DEFAULT_PRICES, ...(config?.prices || {}) }), [config]);
             const pendingDoubles = useMemo(() => purchases
                 .filter(x => x.kind === 'double' && effects.statuses[x.id]?.state === 'toverify')
@@ -1733,7 +1763,7 @@
                     <main className="max-w-7xl mx-auto px-4 py-8 flex-1 w-full">
                         {tab === 'classement' && <Leaderboard players={playersView} isAdmin={isAdmin} onRequestDelete={setToDelete} onRequestEdit={setToEdit} />}
                         {tab === 'joueurs' && <PlayersList players={playersView} />}
-                        {tab === 'historique' && <HistoryView history={history} players={playersView} />}
+                        {tab === 'historique' && <HistoryView history={history} players={playersView} purchases={purchases} statuses={allStatuses} />}
                         {tab === 'boutique' && <ShopView players={playersView} matches={matchList} purchases={purchases} effects={effects} prices={prices} onBuy={crud.buyItem} isAdmin={isAdmin} testMode={testMode} onCancel={crud.cancelPurchase} />}
                         {tab === 'reglement' && <RulesView config={config} />}
                         {tab === 'admin' && isAdmin && (
