@@ -16,26 +16,58 @@ export default async function handler(req, res) {
   const clean = (v) => String(v ?? '').slice(0, 40).replace(/[@`*_~|>\\]/g, '').trim();
   const price = Math.max(0, Math.min(1000, Number(body.price) || 0));
   const buyer = clean(body.buyerName);
+  const kind = body.kind;
+  const mode = body.mode === 'gain' ? 'gain' : 'drain';
 
-  if (!buyer || !['ban', 'shield'].includes(body.kind)) {
+  if (!buyer || !['ban', 'shield', 'double', 'spells', 'lpmove'].includes(kind)) {
     return res.status(400).json({ error: 'Requête invalide' });
   }
 
+  const BONUS = 0x3b82f6; // bleu : bonus pour soi
+  const MALUS = 0xef4444; // rouge : malus sur un adversaire
   let embed;
-  if (body.kind === 'ban') {
+  if (kind === 'ban') {
     const target = clean(body.targetName);
     const champion = clean(body.championName);
     if (!target || !champion) return res.status(400).json({ error: 'Requête invalide' });
     embed = {
       title: '🚫 Champion banni',
       description: `**${buyer}** a banni **${champion}** pour **${target}**.\n**${target}** ne peut pas jouer ${champion} à sa prochaine partie.`,
-      color: 0xef4444,
+      color: MALUS,
+    };
+  } else if (kind === 'spells') {
+    const target = clean(body.targetName);
+    if (!target) return res.status(400).json({ error: 'Requête invalide' });
+    embed = {
+      title: '🔄 Summoners inversés',
+      description: `**${buyer}** inverse les summoners de **${target}**.\n**${target}** doit jouer sa prochaine partie avec ses sorts d'invocateur inversés.`,
+      color: MALUS,
+    };
+  } else if (kind === 'lpmove' && mode === 'drain') {
+    const target = clean(body.targetName);
+    if (!target) return res.status(400).json({ error: 'Requête invalide' });
+    embed = {
+      title: '💥 Sabotage',
+      description: `**${buyer}** fait perdre **10 LP** à **${target}**.`,
+      color: MALUS,
+    };
+  } else if (kind === 'lpmove') {
+    embed = {
+      title: '⚡ Coup de pouce',
+      description: `**${buyer}** s'offre **+10 LP**.`,
+      color: BONUS,
+    };
+  } else if (kind === 'double') {
+    embed = {
+      title: '🎲 Quitte ou double',
+      description: `**${buyer}** joue quitte ou double : les LP gagnés ou perdus sur sa prochaine partie seront **doublés**.`,
+      color: BONUS,
     };
   } else {
     embed = {
       title: '🛡️ Bouclier acheté',
       description: `**${buyer}** a acheté un bouclier : il protège ses points sur sa prochaine partie.`,
-      color: 0x3b82f6,
+      color: BONUS,
     };
   }
   embed.footer = { text: `${price} pts · SoloQ Challenge` };

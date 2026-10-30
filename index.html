@@ -52,7 +52,7 @@
             Trophy, Swords, Flame, ShieldAlert, Award, Clock, Users, 
             ExternalLink, Settings, UserPlus, Edit2, Check, X, Lock, 
             Twitch, Gamepad2, ArrowUpRight, ChevronRight, Sparkles,
-            RotateCcw, History, Shield, ShoppingBag, Ban, Coins
+            RotateCcw, History, Shield, ShoppingBag, Ban, Coins, Dices, ArrowLeftRight, Zap, Skull
         } from 'lucide-react';
         import { initializeApp } from 'firebase/app';
         import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
@@ -395,6 +395,7 @@
                                                     <span className={`font-heading font-bold text-lg ${player.lpDelta >= 0 ? 'text-zinc-100' : 'text-red-400'}`}>
                                                         {player.lpDelta > 0 ? `+${player.lpDelta}` : player.lpDelta || 0} LP
                                                     </span>
+                                                    {!!player.lpAdjust && <div className="text-[10px] text-zinc-500">dont {formatLP(player.lpAdjust)} boutique</div>}
                                                 </td>
                                                 <td className="py-3.5 px-4">
                                                     <div className="max-w-[120px] mx-auto text-center">
@@ -778,28 +779,117 @@
             return { byPlayer, statuses };
         };
 
+        const DEFAULT_PRICES = { shield: 10, double: 10, ban: 15, spells: 10, lpmove: 25 }; // modifiables depuis l'Admin
+        const LPMOVE_LP = 10;
+        const SPELL_NAMES = { 1: 'Purification', 3: 'Épuisement', 4: 'Saut éclair', 6: 'Fantôme', 7: 'Soin', 11: 'Châtiment', 12: 'Téléportation', 13: 'Clarté', 14: 'Embrasement', 21: 'Barrière', 32: 'Boule de neige' };
+
+        const parisDay = (ts) => new Date(ts).toLocaleDateString('sv-SE', { timeZone: 'Europe/Paris' });
+        // Bonus = pour soi · Malus = sur un adversaire (1 de chaque par jour et par joueur)
+        const categoryOf = (kind, mode) => kind === 'lpmove' ? (mode === 'gain' ? 'bonus' : 'malus') : (['shield', 'double'].includes(kind) ? 'bonus' : 'malus');
+
+        // Effets sur les LP (quitte ou double, +10/-10 LP) et vérification des summoners inversés
+        const computeEffects = (players, matches, purchases) => {
+            const startOf = (m) => (m.timestamp || 0) - (m.duration || 0) * 1000;
+            const gamesOf = (playerId) => matches.filter(m => m.playerId === playerId).sort((a, b) => startOf(a) - startOf(b));
+            const lpAdjust = {};
+            const statuses = {};
+            const resetAt = {};
+            players.forEach(pl => { lpAdjust[pl.id] = { qod: 0, moves: 0, total: 0 }; resetAt[pl.id] = pl.lpResetAt || 0; });
+
+            // Quitte ou double : la 1re partie lancée après l'achat voit sa variation de LP comptée une 2e fois
+            players.forEach(pl => {
+                const ms = gamesOf(pl.id);
+                const used = {};
+                purchases.filter(x => x.kind === 'double' && x.buyerId === pl.id).sort((a, b) => a.createdAt - b.createdAt).forEach(d => {
+                    const game = ms.find(g => startOf(g) >= d.createdAt && !used[g.matchId]);
+                    if (!game) { statuses[d.id] = { state: 'pending' }; return; }
+                    used[game.matchId] = true;
+                    if (typeof game.lpChange === 'number') {
+                        statuses[d.id] = { state: 'applied', win: !!game.win, lp: game.lpChange };
+                        if (d.createdAt >= resetAt[pl.id]) lpAdjust[pl.id].qod += game.lpChange;
+                    } else {
+                        statuses[d.id] = { state: 'toverify', win: !!game.win, matchDocId: game.id };
+                    }
+                });
+            });
+
+            // +10 LP pour soi / -10 LP à un adversaire (une fois dans tout le challenge)
+            purchases.filter(x => x.kind === 'lpmove').forEach(m => {
+                const affected = m.mode === 'gain' ? m.buyerId : m.targetId;
+                const delta = m.mode === 'gain' ? LPMOVE_LP : -LPMOVE_LP;
+                if (lpAdjust[affected] && m.createdAt >= resetAt[affected]) lpAdjust[affected].moves += delta;
+                statuses[m.id] = { state: 'applied' };
+            });
+
+            // Summoners inversés : on compare avec la partie précédente (Saut éclair passé de D à F ou inversement)
+            purchases.filter(x => x.kind === 'spells').forEach(sp => {
+                const ms = gamesOf(sp.targetId);
+                const idx = ms.findIndex(g => startOf(g) >= sp.createdAt);
+                if (idx === -1) { statuses[sp.id] = { state: 'pending' }; return; }
+                const game = ms[idx], prev = ms[idx - 1];
+                let check = 'unknown';
+                if (prev) {
+                    const a = (game.spells || []).indexOf(4), b = (prev.spells || []).indexOf(4);
+                    if (a >= 0 && b >= 0) check = a !== b ? 'ok' : 'ko';
+                }
+                const played = (game.spells || []).map(id => SPELL_NAMES[id] || '?').join(' / ');
+                statuses[sp.id] = { state: 'used', check, played };
+            });
+
+            Object.values(lpAdjust).forEach(a => { a.total = a.qod + a.moves; });
+            return { lpAdjust, statuses };
+        };
+
         const describeStatus = (x, st) => {
-            if (!st) return '';
+            if (!st) return null;
             if (x.kind === 'ban') {
                 if (st.state === 'pending') return { text: 'En attente de sa prochaine partie', tone: 'text-zinc-400' };
                 return st.violated
                     ? { text: `⚠️ Non respecté : a joué ${st.played}`, tone: 'text-red-400' }
                     : { text: `Respecté (a joué ${st.played})`, tone: 'text-emerald-400' };
             }
-            if (st.state === 'active') return { text: 'Actif : protège sa prochaine partie', tone: 'text-blue-400' };
-            if (st.win) return { text: 'Gaspillé (partie gagnée)', tone: 'text-zinc-500' };
-            return st.saved > 0
-                ? { text: `A sauvé ${st.saved} point${st.saved > 1 ? 's' : ''}`, tone: 'text-emerald-400' }
-                : { text: 'Utilisé (aucun point à protéger)', tone: 'text-zinc-500' };
+            if (x.kind === 'shield') {
+                if (st.state === 'active') return { text: 'Actif : protège sa prochaine partie', tone: 'text-blue-400' };
+                if (st.win) return { text: 'Gaspillé (partie gagnée)', tone: 'text-zinc-500' };
+                return st.saved > 0
+                    ? { text: `A sauvé ${st.saved} point${st.saved > 1 ? 's' : ''}`, tone: 'text-emerald-400' }
+                    : { text: 'Utilisé (aucun point à protéger)', tone: 'text-zinc-500' };
+            }
+            if (x.kind === 'double') {
+                if (st.state === 'pending') return { text: 'En attente de sa prochaine partie', tone: 'text-blue-400' };
+                if (st.state === 'toverify') return { text: 'Partie jouée : variation de LP à valider par l\'organisateur', tone: 'text-amber-400' };
+                if (st.lp === 0) return { text: 'Aucun LP gagné ni perdu : sans effet', tone: 'text-zinc-500' };
+                return st.lp > 0
+                    ? { text: `Gagné : +${st.lp} LP en plus (×2)`, tone: 'text-emerald-400' }
+                    : { text: `Perdu : ${st.lp} LP en plus (×2)`, tone: 'text-red-400' };
+            }
+            if (x.kind === 'spells') {
+                if (st.state === 'pending') return { text: 'En attente de sa prochaine partie', tone: 'text-zinc-400' };
+                if (st.check === 'ok') return { text: `Respecté (sorts : ${st.played})`, tone: 'text-emerald-400' };
+                if (st.check === 'ko') return { text: `⚠️ Non respecté (sorts : ${st.played})`, tone: 'text-red-400' };
+                return { text: `Partie jouée (sorts : ${st.played}), à vérifier`, tone: 'text-zinc-400' };
+            }
+            if (x.kind === 'lpmove') return { text: `${x.mode === 'gain' ? '+' : '−'}${LPMOVE_LP} LP appliqués`, tone: x.mode === 'gain' ? 'text-emerald-400' : 'text-red-400' };
+            return null;
         };
 
-        const ShopView = ({ players, matches, purchases, onBuyShield, onBuyBan }) => {
+        const ItemCard = ({ icon, title, price, desc, children, onBuy, disabled, busy, btnLabel }) => (
+            <div className="rounded-xl border border-zinc-800 bg-zinc-950 p-4 flex flex-col gap-2">
+                <div className="flex items-center gap-2 font-heading font-bold text-zinc-100">{icon} {title} <span className="ml-auto text-sm text-zinc-300">{price} pts</span></div>
+                <p className="text-xs text-zinc-400">{desc}</p>
+                {children}
+                <button onClick={onBuy} disabled={busy || disabled} className="mt-1 w-full bg-zinc-100 hover:bg-white text-zinc-900 font-heading font-bold py-2 rounded-xl text-sm disabled:opacity-40 disabled:cursor-not-allowed transition">{btnLabel}</button>
+            </div>
+        );
+
+        const ShopView = ({ players, matches, purchases, effects, prices, onBuy }) => {
             const version = useDdragonVersion();
             const [buyerId, setBuyerId] = useState(() => { try { return localStorage.getItem('shopBuyer') || ''; } catch { return ''; } });
             const [targetId, setTargetId] = useState('');
             const [champ, setChamp] = useState(null);
             const [search, setSearch] = useState('');
             const [champs, setChamps] = useState([]);
+            const [showChamps, setShowChamps] = useState(false);
             const [busy, setBusy] = useState(false);
             const [msg, setMsg] = useState(null);
 
@@ -812,46 +902,74 @@
                 return () => { alive = false; };
             }, [version]);
 
-            const { byPlayer, statuses } = useMemo(() => computeShop(players, matches, purchases), [players, matches, purchases]);
+            const shop = useMemo(() => computeShop(players, matches, purchases), [players, matches, purchases]);
+            const byPlayer = shop.byPlayer;
+            const statuses = useMemo(() => ({ ...shop.statuses, ...effects.statuses }), [shop, effects]);
             const board = useMemo(() => [...players].sort((a, b) => (byPlayer[b.id]?.balance ?? 0) - (byPlayer[a.id]?.balance ?? 0)), [players, byPlayer]);
             const sortedPlayers = useMemo(() => [...players].sort((a, b) => (a.playerName || '').localeCompare(b.playerName || '')), [players]);
 
             const buyer = players.find(p => p.id === buyerId);
             const target = players.find(p => p.id === targetId);
             const balance = buyer ? (byPlayer[buyer.id]?.balance ?? 0) : 0;
-            const bannedForTarget = useMemo(() => new Set(purchases.filter(x => x.kind === 'ban' && x.targetId === targetId).map(x => x.championKey)), [purchases, targetId]);
+            const today = parisDay(Date.now());
+            const slotUsed = (cat) => !!buyer && purchases.some(x => x.buyerId === buyer.id && categoryOf(x.kind, x.mode) === cat && parisDay(x.createdAt) === today);
+            const bonusUsed = slotUsed('bonus'), malusUsed = slotUsed('malus');
+            const lpmoveUsed = !!buyer && purchases.some(x => x.kind === 'lpmove' && x.buyerId === buyer.id);
+            const bannedToday = useMemo(() => new Set(purchases.filter(x => x.kind === 'ban' && x.targetId === targetId && parisDay(x.createdAt) === today).map(x => x.championKey)), [purchases, targetId, today]);
             const visibleChamps = champs.filter(c => c.name.toLowerCase().includes(search.toLowerCase()));
 
             const chooseBuyer = (id) => {
                 setBuyerId(id);
+                if (id === targetId) { setTargetId(''); setChamp(null); }
                 try { localStorage.setItem('shopBuyer', id); } catch {}
                 setMsg(null);
             };
 
-            const run = async (fn, okText) => {
+            const buy = async (kind, mode) => {
+                const cat = categoryOf(kind, mode);
+                const price = prices[kind];
+                const fail = (text) => setMsg({ ok: false, text });
+                if (!buyer) return fail('Choisis d\'abord qui tu es.');
+                if (cat === 'malus' && !target) return fail('Choisis d\'abord le joueur ciblé.');
+                if (kind === 'ban' && !champ) return fail('Choisis le champion à bannir.');
+                if (kind === 'lpmove' && lpmoveUsed) return fail(`Tu as déjà utilisé ton coup de ${LPMOVE_LP} LP (une seule fois dans tout le challenge).`);
+                if (slotUsed(cat)) return fail(`Tu as déjà acheté ton ${cat} aujourd'hui (1 ${cat} par jour).`);
+                if (balance < price) return fail(`Il te faut ${price} points (tu en as ${balance}).`);
+                const label = {
+                    shield: 'Acheter un bouclier',
+                    double: 'Jouer quitte ou double sur ta prochaine partie',
+                    ban: `Bannir ${champ?.name} pour ${target?.playerName}`,
+                    spells: `Inverser les summoners de ${target?.playerName}`,
+                    lpmove: mode === 'gain' ? `Gagner ${LPMOVE_LP} LP (usage unique dans tout le challenge)` : `Faire perdre ${LPMOVE_LP} LP à ${target?.playerName} (usage unique dans tout le challenge)`
+                }[kind];
+                if (!window.confirm(`${label} ? (${price} points)`)) return;
                 setBusy(true); setMsg(null);
-                try { await fn(); setMsg({ ok: true, text: okText }); }
-                catch (e) { setMsg({ ok: false, text: e.message || 'Erreur pendant l\'achat.' }); }
-                finally { setBusy(false); }
+                try {
+                    await onBuy({ buyer, kind, mode, target: cat === 'malus' ? target : null, champ: kind === 'ban' ? champ : null, price });
+                    if (kind === 'ban') { setChamp(null); setShowChamps(false); }
+                    setMsg({ ok: true, text: 'Achat effectué !' + (['shield', 'double'].includes(kind) ? ' Lance ta partie après cet achat.' : '') });
+                } catch (e) {
+                    setMsg({ ok: false, text: e.message || 'Erreur pendant l\'achat.' });
+                } finally {
+                    setBusy(false);
+                }
             };
 
-            const buyShield = () => {
-                if (!buyer) return setMsg({ ok: false, text: 'Choisis d\'abord qui tu es.' });
-                if (balance < PRICES.shield) return setMsg({ ok: false, text: `Il te faut ${PRICES.shield} points (tu en as ${balance}).` });
-                run(() => onBuyShield({ buyer, price: PRICES.shield }), 'Bouclier acheté ! Il protège ta prochaine partie. Lance-la après cet achat.');
-            };
-
-            const buyBan = () => {
-                if (!buyer) return setMsg({ ok: false, text: 'Choisis d\'abord qui tu es.' });
-                if (!target) return setMsg({ ok: false, text: 'Choisis le joueur à cibler.' });
-                if (!champ) return setMsg({ ok: false, text: 'Choisis le champion à bannir.' });
-                if (balance < PRICES.ban) return setMsg({ ok: false, text: `Il te faut ${PRICES.ban} points (tu en as ${balance}).` });
-                if (!window.confirm(`Bannir ${champ.name} pour ${target.playerName} ? (${PRICES.ban} points, définitif)`)) return;
-                run(async () => { await onBuyBan({ buyer, target, champ, price: PRICES.ban }); setChamp(null); }, `${champ.name} est banni pour ${target.playerName}.`);
-            };
-
-            const sign = (n) => n > 0 ? `+${n}` : `${n}`;
             const feed = [...purchases].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 30);
+            const feedTitle = (x) => {
+                if (x.kind === 'ban') return <><b>{x.buyerName}</b> a banni <b>{x.championName}</b> pour <b>{x.targetName}</b></>;
+                if (x.kind === 'shield') return <><b>{x.buyerName}</b> a acheté un bouclier</>;
+                if (x.kind === 'double') return <><b>{x.buyerName}</b> joue quitte ou double</>;
+                if (x.kind === 'spells') return <><b>{x.buyerName}</b> inverse les summoners de <b>{x.targetName}</b></>;
+                if (x.kind === 'lpmove') return x.mode === 'gain' ? <><b>{x.buyerName}</b> s'offre +{LPMOVE_LP} LP</> : <><b>{x.buyerName}</b> fait perdre {LPMOVE_LP} LP à <b>{x.targetName}</b></>;
+                return null;
+            };
+            const feedIcon = (x) => {
+                if (x.kind === 'ban') return <img src={`https://ddragon.leagueoflegends.com/cdn/${version}/img/champion/${x.championKey}.png`} alt="" className="w-9 h-9 rounded-lg border border-zinc-700" onError={e => { e.currentTarget.style.visibility = 'hidden'; }} />;
+                const Icon = { shield: Shield, double: Dices, spells: ArrowLeftRight, lpmove: x.mode === 'gain' ? Zap : Skull }[x.kind] || ShoppingBag;
+                const color = categoryOf(x.kind, x.mode) === 'bonus' ? 'text-blue-400' : 'text-red-400';
+                return <div className="w-9 h-9 rounded-lg border border-zinc-700 bg-zinc-900 flex items-center justify-center"><Icon size={16} className={color} /></div>;
+            };
 
             return (
                 <div className="max-w-5xl mx-auto space-y-8">
@@ -884,7 +1002,7 @@
                         </div>
                     </div>
 
-                    {/* Achat */}
+                    {/* Achats */}
                     <div className="bg-zinc-900 rounded-2xl border border-zinc-800 p-6 space-y-6">
                         <div className="flex flex-col sm:flex-row sm:items-end gap-3 justify-between">
                             <label className="block text-xs text-zinc-400 flex-1 max-w-xs">Acheter en tant que
@@ -893,47 +1011,68 @@
                                     {sortedPlayers.map(p => <option key={p.id} value={p.id}>{p.playerName}</option>)}
                                 </select>
                             </label>
-                            {buyer && <div className="text-sm text-zinc-400">Ton solde : <span className={`font-heading font-black text-xl ${balance < 0 ? 'text-red-400' : 'text-white'}`}>{balance} pts</span></div>}
+                            {buyer && (
+                                <div className="text-sm text-zinc-400 space-y-1 sm:text-right">
+                                    <div>Ton solde : <span className={`font-heading font-black text-xl ${balance < 0 ? 'text-red-400' : 'text-white'}`}>{balance} pts</span></div>
+                                    <div className="text-xs">Aujourd'hui : bonus <b className={bonusUsed ? 'text-zinc-500' : 'text-emerald-400'}>{bonusUsed ? 'utilisé' : 'disponible'}</b> · malus <b className={malusUsed ? 'text-zinc-500' : 'text-emerald-400'}>{malusUsed ? 'utilisé' : 'disponible'}</b></div>
+                                </div>
+                            )}
                         </div>
+                        <p className="text-xs text-zinc-500">Chaque joueur peut acheter <b className="text-zinc-300">1 bonus</b> et <b className="text-zinc-300">1 malus</b> par jour (remise à zéro à minuit, heure de Paris).</p>
 
-                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-                            {/* Bouclier */}
-                            <div className="rounded-xl border border-zinc-800 bg-zinc-950 p-4 flex flex-col">
-                                <div className="flex items-center gap-2 font-heading font-bold text-zinc-100 mb-1"><Shield size={16} className="text-blue-400" /> Bouclier <span className="ml-auto text-sm text-zinc-300">{PRICES.shield} pts</span></div>
-                                <p className="text-xs text-zinc-400 flex-1">À acheter <b className="text-zinc-200">avant de lancer ta partie</b>. Si tu perds, les points perdus (morts) ne sont pas comptés. Si tu gagnes, il disparaît sans effet.</p>
-                                <button onClick={buyShield} disabled={busy} className="mt-4 w-full bg-zinc-100 hover:bg-white text-zinc-900 font-heading font-bold py-2 rounded-xl text-sm disabled:opacity-50 transition">Acheter le bouclier</button>
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                            {/* BONUS */}
+                            <div className="space-y-3">
+                                <div className="font-heading font-bold text-sm uppercase tracking-wider text-blue-300 flex items-center gap-2"><Shield size={14} /> Bonus · pour toi</div>
+                                <ItemCard icon={<Shield size={16} className="text-blue-400" />} title="Bouclier" price={prices.shield} busy={busy} disabled={bonusUsed} btnLabel="Acheter le bouclier" onBuy={() => buy('shield')}
+                                    desc={<>À acheter <b className="text-zinc-200">avant de lancer ta partie</b>. Si tu perds, les points perdus (morts) ne sont pas comptés. Si tu gagnes, il disparaît sans effet.</>} />
+                                <ItemCard icon={<Dices size={16} className="text-blue-400" />} title="Quitte ou double" price={prices.double} busy={busy} disabled={bonusUsed} btnLabel="Jouer quitte ou double" onBuy={() => buy('double')}
+                                    desc={<>À acheter <b className="text-zinc-200">avant ta partie</b>. Victoire : tu gagnes 2× les LP. Défaite : tu perds 2× les LP.</>} />
+                                <ItemCard icon={<Zap size={16} className="text-blue-400" />} title={`Coup de pouce +${LPMOVE_LP} LP`} price={prices.lpmove} busy={busy} disabled={bonusUsed || lpmoveUsed} btnLabel={lpmoveUsed ? 'Déjà utilisé' : `Gagner ${LPMOVE_LP} LP`} onBuy={() => buy('lpmove', 'gain')}
+                                    desc={<>Tu gagnes {LPMOVE_LP} LP directement. <b className="text-zinc-200">Une seule fois dans tout le challenge</b> (au choix avec le sabotage).</>} />
                             </div>
 
-                            {/* Ban */}
-                            <div className="rounded-xl border border-zinc-800 bg-zinc-950 p-4 lg:col-span-2 space-y-3">
-                                <div className="flex items-center gap-2 font-heading font-bold text-zinc-100"><Ban size={16} className="text-red-400" /> Bannir un champion <span className="ml-auto text-sm text-zinc-300">{PRICES.ban} pts</span></div>
-                                <p className="text-xs text-zinc-400">Interdit un champion à un joueur pour sa prochaine partie. Un champion déjà banni pour un joueur ne peut plus jamais être rebanni pour lui.</p>
-                                <select value={targetId} onChange={e => { setTargetId(e.target.value); setChamp(null); }} className="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-3 py-2.5 text-sm text-white">
+                            {/* MALUS */}
+                            <div className="space-y-3">
+                                <div className="font-heading font-bold text-sm uppercase tracking-wider text-red-300 flex items-center gap-2"><Skull size={14} /> Malus · sur un adversaire</div>
+                                <select value={targetId} onChange={e => { setTargetId(e.target.value); setChamp(null); }} className="w-full bg-zinc-950 border border-zinc-700 rounded-xl px-3 py-2.5 text-sm text-white">
                                     <option value="">Joueur ciblé…</option>
                                     {sortedPlayers.filter(p => p.id !== buyerId).map(p => <option key={p.id} value={p.id}>{p.playerName}</option>)}
                                 </select>
-                                {target && (
-                                    <>
-                                        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Rechercher un champion…" className="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-3 py-2 text-sm text-white placeholder-zinc-500" />
-                                        <div className="max-h-56 overflow-y-auto grid grid-cols-5 sm:grid-cols-8 gap-1.5 pr-1">
-                                            {champs.length === 0 && <div className="col-span-full text-xs text-zinc-500 italic py-4 text-center">Chargement des champions…</div>}
-                                            {visibleChamps.map(c => {
-                                                const taken = bannedForTarget.has(c.id);
-                                                const sel = champ?.id === c.id;
-                                                return (
-                                                    <button key={c.id} disabled={taken} onClick={() => setChamp(c)} title={taken ? `${c.name} : déjà banni pour ${target.playerName}` : c.name}
-                                                        className={`relative rounded-lg overflow-hidden border transition ${sel ? 'border-zinc-100 ring-2 ring-zinc-100' : 'border-zinc-800 hover:border-zinc-500'} ${taken ? 'opacity-30 cursor-not-allowed' : ''}`}>
-                                                        <img src={`https://ddragon.leagueoflegends.com/cdn/${version}/img/champion/${c.id}.png`} alt={c.name} className="w-full aspect-square object-cover" loading="lazy" />
-                                                        {taken && <Ban size={16} className="absolute inset-0 m-auto text-red-400" />}
-                                                    </button>
-                                                );
-                                            })}
-                                        </div>
-                                    </>
-                                )}
-                                <button onClick={buyBan} disabled={busy} className="w-full bg-zinc-100 hover:bg-white text-zinc-900 font-heading font-bold py-2 rounded-xl text-sm disabled:opacity-50 transition">
-                                    {champ && target ? `Bannir ${champ.name} pour ${target.playerName}` : 'Bannir le champion'}
-                                </button>
+
+                                <ItemCard icon={<Ban size={16} className="text-red-400" />} title="Bannir un champion" price={prices.ban} busy={busy} disabled={malusUsed || !target || !champ} btnLabel={champ && target ? `Bannir ${champ.name} pour ${target.playerName}` : 'Bannir le champion'} onBuy={() => buy('ban')}
+                                    desc="Interdit un champion à ce joueur pour sa prochaine partie. Un même champion ne peut être banni qu'une fois par jour pour un joueur.">
+                                    {target && (
+                                        <>
+                                            <button onClick={() => setShowChamps(v => !v)} className="text-left text-xs text-zinc-300 bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 hover:border-zinc-500 transition">{champ ? `Champion choisi : ${champ.name}` : 'Choisir un champion…'} <span className="text-zinc-500">{showChamps ? '▲' : '▼'}</span></button>
+                                            {showChamps && (
+                                                <>
+                                                    <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Rechercher un champion…" className="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-3 py-2 text-sm text-white placeholder-zinc-500" />
+                                                    <div className="max-h-52 overflow-y-auto grid grid-cols-5 sm:grid-cols-7 gap-1.5 pr-1">
+                                                        {champs.length === 0 && <div className="col-span-full text-xs text-zinc-500 italic py-4 text-center">Chargement des champions…</div>}
+                                                        {visibleChamps.map(c => {
+                                                            const taken = bannedToday.has(c.id);
+                                                            const sel = champ?.id === c.id;
+                                                            return (
+                                                                <button key={c.id} disabled={taken} onClick={() => { setChamp(c); setShowChamps(false); }} title={taken ? `${c.name} : déjà banni aujourd'hui pour ${target.playerName}` : c.name}
+                                                                    className={`relative rounded-lg overflow-hidden border transition ${sel ? 'border-zinc-100 ring-2 ring-zinc-100' : 'border-zinc-800 hover:border-zinc-500'} ${taken ? 'opacity-30 cursor-not-allowed' : ''}`}>
+                                                                    <img src={`https://ddragon.leagueoflegends.com/cdn/${version}/img/champion/${c.id}.png`} alt={c.name} className="w-full aspect-square object-cover" loading="lazy" />
+                                                                    {taken && <Ban size={16} className="absolute inset-0 m-auto text-red-400" />}
+                                                                </button>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                </>
+                                            )}
+                                        </>
+                                    )}
+                                </ItemCard>
+
+                                <ItemCard icon={<ArrowLeftRight size={16} className="text-red-400" />} title="Summoners inversés" price={prices.spells} busy={busy} disabled={malusUsed || !target} btnLabel={target ? `Inverser ceux de ${target.playerName}` : 'Inverser les summoners'} onBuy={() => buy('spells')}
+                                    desc="Le joueur ciblé doit jouer sa prochaine partie avec ses sorts d'invocateur inversés (par exemple Saut éclair sur D au lieu de F)." />
+
+                                <ItemCard icon={<Skull size={16} className="text-red-400" />} title={`Sabotage −${LPMOVE_LP} LP`} price={prices.lpmove} busy={busy} disabled={malusUsed || lpmoveUsed || !target} btnLabel={lpmoveUsed ? 'Déjà utilisé' : (target ? `Retirer ${LPMOVE_LP} LP à ${target.playerName}` : `Retirer ${LPMOVE_LP} LP`)} onBuy={() => buy('lpmove', 'drain')}
+                                    desc={<>Le joueur ciblé perd {LPMOVE_LP} LP directement. <b className="text-zinc-200">Une seule fois dans tout le challenge</b> (au choix avec le coup de pouce).</>} />
                             </div>
                         </div>
 
@@ -949,15 +1088,9 @@
                                 const d = describeStatus(x, statuses[x.id]);
                                 return (
                                     <div key={x.id} className="px-4 py-3 flex items-center gap-3">
-                                        {x.kind === 'ban'
-                                            ? <img src={`https://ddragon.leagueoflegends.com/cdn/${version}/img/champion/${x.championKey}.png`} alt="" className="w-9 h-9 rounded-lg border border-zinc-700" onError={e => { e.currentTarget.style.visibility = 'hidden'; }} />
-                                            : <div className="w-9 h-9 rounded-lg border border-zinc-700 bg-zinc-900 flex items-center justify-center"><Shield size={16} className="text-blue-400" /></div>}
+                                        {feedIcon(x)}
                                         <div className="flex-1 min-w-0">
-                                            <div className="text-sm text-zinc-200">
-                                                {x.kind === 'ban'
-                                                    ? <><b>{x.buyerName}</b> a banni <b>{x.championName}</b> pour <b>{x.targetName}</b></>
-                                                    : <><b>{x.buyerName}</b> a acheté un bouclier</>}
-                                            </div>
+                                            <div className="text-sm text-zinc-200">{feedTitle(x)}</div>
                                             {d && <div className={`text-xs ${d.tone}`}>{d.text}</div>}
                                         </div>
                                         <div className="text-right shrink-0">
@@ -1089,7 +1222,57 @@
             );
         };
 
-        const AdminPanel = ({ players, matches, onAddPlayer, onUpdatePlayer, onSaveMatch, onRequestEdit, onRequestReset }) => {
+        // ---------- Admin : prix de la boutique + validation des « quitte ou double » ----------
+        const PricesEditor = ({ config, onUpdateConfig }) => {
+            const fromConfig = () => ({ ...DEFAULT_PRICES, ...(config?.prices || {}) });
+            const [vals, setVals] = useState(fromConfig);
+            const [saved, setSaved] = useState(false);
+            useEffect(() => { setVals(fromConfig()); }, [config]);
+            const labels = { shield: 'Bouclier', double: 'Quitte ou double', ban: 'Bannir un champion', spells: 'Summoners inversés', lpmove: '±10 LP (usage unique)' };
+            const save = async () => {
+                const prices = Object.fromEntries(Object.keys(DEFAULT_PRICES).map(k => [k, Math.max(0, Math.round(Number(vals[k]) || 0))]));
+                await onUpdateConfig({ prices });
+                setSaved(true);
+                setTimeout(() => setSaved(false), 2000);
+            };
+            return (
+                <div className="bg-zinc-900 p-6 rounded-2xl border border-zinc-800">
+                    <h3 className="font-heading text-xl font-bold text-white flex items-center gap-2 mb-1"><Coins className="text-zinc-400" /> Prix de la boutique</h3>
+                    <p className="text-xs text-zinc-400 mb-4">En points. Le nouveau prix s'applique aux prochains achats.</p>
+                    <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
+                        {Object.keys(DEFAULT_PRICES).map(k => (
+                            <label key={k} className="block text-xs text-zinc-400">{labels[k]}
+                                <input type="number" min="0" value={vals[k]} onChange={e => setVals({ ...vals, [k]: e.target.value })} className="mt-1 w-full bg-zinc-950 border border-zinc-700 rounded-xl px-3 py-2 text-sm text-white" />
+                            </label>
+                        ))}
+                    </div>
+                    <button onClick={save} className="w-full bg-zinc-100 hover:bg-white text-zinc-900 font-heading font-bold py-2.5 rounded-xl transition">{saved ? 'Enregistré ✓' : 'Enregistrer les prix'}</button>
+                </div>
+            );
+        };
+
+        // Quitte ou double : si la variation de LP d'une partie n'a pas pu être isolée (plusieurs parties entre deux synchros), l'organisateur la saisit
+        const DoubleValidator = ({ items, onSetMatchLp }) => {
+            const [vals, setVals] = useState({});
+            if (!items.length) return null;
+            return (
+                <div className="bg-zinc-900 p-6 rounded-2xl border border-amber-500/30">
+                    <h3 className="font-heading text-xl font-bold text-white flex items-center gap-2 mb-1"><Dices className="text-amber-400" /> Quitte ou double à valider</h3>
+                    <p className="text-xs text-zinc-400 mb-4">Plusieurs parties ont été jouées entre deux synchros : entre les LP gagnés (ex. 18) ou perdus (ex. −20) sur la partie concernée.</p>
+                    <div className="divide-y divide-zinc-800/70">
+                        {items.map(x => (
+                            <div key={x.id} className="flex flex-wrap items-center gap-3 py-2.5">
+                                <div className="flex-1 min-w-[160px] text-sm text-zinc-200"><b>{x.buyerName}</b> <span className="text-zinc-500">· partie {x.win ? 'gagnée' : 'perdue'}</span></div>
+                                <input type="number" placeholder="LP" value={vals[x.id] ?? ''} onChange={e => setVals({ ...vals, [x.id]: e.target.value })} className="w-24 bg-zinc-950 border border-zinc-700 rounded-xl px-3 py-2 text-sm text-white" />
+                                <button disabled={vals[x.id] === undefined || vals[x.id] === '' || Number.isNaN(Number(vals[x.id]))} onClick={() => onSetMatchLp(x.matchDocId, Number(vals[x.id]))} className="bg-zinc-100 hover:bg-white text-zinc-900 font-heading font-bold text-xs uppercase px-4 py-2 rounded-xl disabled:opacity-40 transition">Valider</button>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+        };
+
+        const AdminPanel = ({ players, matches, config, onUpdateConfig, pendingDoubles, onSetMatchLp, onAddPlayer, onUpdatePlayer, onSaveMatch, onRequestEdit, onRequestReset }) => {
             const [apiKey, setApiKey] = useState(() => { try { return localStorage.getItem('riotApiKey') || ''; } catch { return ''; } });
             const [status, setStatus] = useState('');
             const [loading, setLoading] = useState(false);
@@ -1301,6 +1484,9 @@
                         </div>
                     </div>
 
+                    <PricesEditor config={config} onUpdateConfig={onUpdateConfig} />
+                    <DoubleValidator items={pendingDoubles || []} onSetMatchLp={onSetMatchLp} />
+
                     <div className="bg-zinc-900 p-6 rounded-2xl border border-zinc-800">
                         <h3 className="font-heading text-xl font-bold text-white flex items-center gap-2 mb-2">
                             <RotateCcw className="text-zinc-400" /> Réinitialiser les compteurs LP
@@ -1370,29 +1556,37 @@
                 del: async id => deleteDoc(doc(db, 'players', id)),
                 updateConfig: async data => setDoc(doc(db, 'config', 'main'), data, { merge: true }),
                 saveMatch: async (id, data) => setDoc(doc(db, 'history', id), data),
-                buyShield: async ({ buyer, price }) => {
+                updateHistoryDoc: async (id, data) => updateDoc(doc(db, 'history', id), data),
+                // Achat unique, vérifié dans une transaction :
+                //  - 1 bonus et 1 malus par jour et par joueur (document « limit »)
+                //  - un même champion ne se banne qu'une fois par jour pour un joueur
+                //  - le coup de pouce / sabotage de LP ne s'achète qu'une fois dans tout le challenge
+                buyItem: async ({ buyer, kind, mode, target, champ, price }) => {
                     const now = Date.now();
-                    await addDoc(collection(db, 'history'), {
-                        type: 'purchase', kind: 'shield', buyerId: buyer.id, buyerName: buyer.playerName,
-                        price, createdAt: now, timestamp: now
-                    });
-                    notifyDiscord({ kind: 'shield', buyerName: buyer.playerName, price });
-                },
-                // Identifiant fixe par (joueur ciblé, champion) : impossible de bannir deux fois le même champion pour le même joueur
-                buyBan: async ({ buyer, target, champ, price }) => {
-                    const now = Date.now();
-                    const ref = doc(db, 'history', `ban_${target.id}_${champ.id}`);
+                    const day = parisDay(now);
+                    const category = categoryOf(kind, mode);
+                    const limitRef = doc(db, 'history', `limit_${buyer.id}_${day}_${category}`);
+                    const purchaseRef = kind === 'ban' ? doc(db, 'history', `ban_${target.id}_${champ.id}_${day}`)
+                        : kind === 'lpmove' ? doc(db, 'history', `lpmove_${buyer.id}`)
+                        : doc(collection(db, 'history'));
+                    const data = { type: 'purchase', kind, buyerId: buyer.id, buyerName: buyer.playerName, price, category, day, createdAt: now, timestamp: now };
+                    if (mode) data.mode = mode;
+                    if (target) { data.targetId = target.id; data.targetName = target.playerName; }
+                    if (champ) { data.championKey = champ.id; data.championName = champ.name; }
+
                     await runTransaction(db, async tx => {
-                        const snap = await tx.get(ref);
-                        if (snap.exists()) throw new Error(`${champ.name} est déjà banni pour ${target.playerName} : impossible de le rebannir.`);
-                        tx.set(ref, {
-                            type: 'purchase', kind: 'ban', buyerId: buyer.id, buyerName: buyer.playerName,
-                            targetId: target.id, targetName: target.playerName,
-                            championKey: champ.id, championName: champ.name,
-                            price, createdAt: now, timestamp: now
-                        });
+                        const limitSnap = await tx.get(limitRef);
+                        const purchaseSnap = await tx.get(purchaseRef);
+                        if (limitSnap.exists()) throw new Error(`Tu as déjà acheté ton ${category} aujourd'hui (1 ${category} par jour).`);
+                        if (purchaseSnap.exists()) {
+                            throw new Error(kind === 'ban'
+                                ? `${champ.name} est déjà banni aujourd'hui pour ${target.playerName}.`
+                                : `Tu as déjà utilisé ton coup de ${LPMOVE_LP} LP (une seule fois dans tout le challenge).`);
+                        }
+                        tx.set(limitRef, { type: 'limit', buyerId: buyer.id, day, category, timestamp: now });
+                        tx.set(purchaseRef, data);
                     });
-                    notifyDiscord({ kind: 'ban', buyerName: buyer.playerName, targetName: target.playerName, championName: champ.name, price });
+                    notifyDiscord({ kind, mode, buyerName: buyer.playerName, targetName: target?.playerName, championName: champ?.name, price });
                 }
             };
 
@@ -1405,6 +1599,7 @@
                         batch.update(doc(db, 'players', p.id), {
                             startAbsoluteLP: p.currentAbsoluteLP ?? null,
                             lpDelta: 0,
+                            lpResetAt: Date.now(),
                             historySince: Math.floor(Date.now() / 1000)
                         });
                     });
@@ -1427,6 +1622,18 @@
                     setResetting(false);
                 }
             };
+
+            const matchList = useMemo(() => history.filter(h => h.type === 'match'), [history]);
+            const effects = useMemo(() => computeEffects(players, matchList, purchases), [players, matchList, purchases]);
+            // Les LP affichés = LP Riot + effets de la boutique (quitte ou double, coup de pouce / sabotage)
+            const playersView = useMemo(() => players.map(p => {
+                const adj = effects.lpAdjust[p.id]?.total || 0;
+                return { ...p, lpAdjust: adj, lpDelta: (p.lpDelta || 0) + adj };
+            }), [players, effects]);
+            const prices = useMemo(() => ({ ...DEFAULT_PRICES, ...(config?.prices || {}) }), [config]);
+            const pendingDoubles = useMemo(() => purchases
+                .filter(x => x.kind === 'double' && effects.statuses[x.id]?.state === 'toverify')
+                .map(x => ({ ...x, matchDocId: effects.statuses[x.id].matchDocId, win: effects.statuses[x.id].win })), [purchases, effects]);
 
             const stats = useMemo(() => {
                 const totalGames = players.reduce((acc, p) => acc + (p.wins || 0) + (p.losses || 0), 0);
@@ -1473,18 +1680,22 @@
 
                     {/* Main content */}
                     <main className="max-w-7xl mx-auto px-4 py-8 flex-1 w-full">
-                        {tab === 'classement' && <Leaderboard players={players} isAdmin={isAdmin} onRequestDelete={setToDelete} onRequestEdit={setToEdit} />}
-                        {tab === 'joueurs' && <PlayersList players={players} />}
-                        {tab === 'historique' && <HistoryView history={history} players={players} />}
-                        {tab === 'boutique' && <ShopView players={players} matches={history.filter(h => h.type === 'match')} purchases={purchases} onBuyShield={crud.buyShield} onBuyBan={crud.buyBan} />}
+                        {tab === 'classement' && <Leaderboard players={playersView} isAdmin={isAdmin} onRequestDelete={setToDelete} onRequestEdit={setToEdit} />}
+                        {tab === 'joueurs' && <PlayersList players={playersView} />}
+                        {tab === 'historique' && <HistoryView history={history} players={playersView} />}
+                        {tab === 'boutique' && <ShopView players={playersView} matches={matchList} purchases={purchases} effects={effects} prices={prices} onBuy={crud.buyItem} />}
                         {tab === 'reglement' && <RulesView config={config} />}
                         {tab === 'admin' && isAdmin && (
                             <AdminPanel
                                 players={players}
                                 onAddPlayer={crud.add}
                                 onUpdatePlayer={crud.update}
-                                matches={history.filter(h => h.type === 'match')}
+                                matches={matchList}
                                 onSaveMatch={crud.saveMatch}
+                                config={config}
+                                onUpdateConfig={crud.updateConfig}
+                                pendingDoubles={pendingDoubles}
+                                onSetMatchLp={(id, lp) => crud.updateHistoryDoc(id, { lpChange: lp })}
                                 onRequestEdit={setToEdit}
                                 onRequestReset={() => setShowReset(true)}
                             />
