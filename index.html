@@ -1357,6 +1357,13 @@
                 return () => { unsubP(); unsubC(); unsubH(); unsubS(); };
             }, [user]);
 
+            // Alerte Discord (via /api/discord) : ne bloque jamais l'achat si elle échoue
+            const notifyDiscord = (payload) => {
+                try {
+                    fetch('/api/discord', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }).catch(() => {});
+                } catch {}
+            };
+
             const crud = {
                 add: async data => addDoc(collection(db, 'players'), data),
                 update: async (id, data) => updateDoc(doc(db, 'players', id), data),
@@ -1369,6 +1376,7 @@
                         type: 'purchase', kind: 'shield', buyerId: buyer.id, buyerName: buyer.playerName,
                         price, createdAt: now, timestamp: now
                     });
+                    notifyDiscord({ kind: 'shield', buyerName: buyer.playerName, price });
                 },
                 // Identifiant fixe par (joueur ciblé, champion) : impossible de bannir deux fois le même champion pour le même joueur
                 buyBan: async ({ buyer, target, champ, price }) => {
@@ -1384,6 +1392,7 @@
                             price, createdAt: now, timestamp: now
                         });
                     });
+                    notifyDiscord({ kind: 'ban', buyerName: buyer.playerName, targetName: target.playerName, championName: champ.name, price });
                 }
             };
 
