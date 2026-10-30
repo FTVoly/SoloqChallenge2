@@ -52,11 +52,11 @@
             Trophy, Swords, Flame, ShieldAlert, Award, Clock, Users, 
             ExternalLink, Settings, UserPlus, Edit2, Check, X, Lock, 
             Twitch, Gamepad2, ArrowUpRight, ChevronRight, Sparkles,
-            RotateCcw, History, Shield
+            RotateCcw, History, Shield, ShoppingBag, Ban, Coins
         } from 'lucide-react';
         import { initializeApp } from 'firebase/app';
         import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
-        import { getFirestore, doc, setDoc, onSnapshot, collection, addDoc, updateDoc, deleteDoc, query, orderBy, limit, writeBatch, getDocs } from 'firebase/firestore';
+        import { getFirestore, doc, setDoc, onSnapshot, collection, addDoc, updateDoc, deleteDoc, query, orderBy, limit, writeBatch, getDocs, where, runTransaction } from 'firebase/firestore';
 
         const firebaseConfig = {
             apiKey: "AIzaSyBwNrlXY81VOXtp2EGyFb_k3OWHKbtcY2o",
@@ -720,6 +720,259 @@
             );
         };
 
+        // ---------- Boutique à points ----------
+        const POINTS = { kill: 1, win: 3, deathsPerPenalty: 2 }; // 1 kill = +1 · victoire = +3 · toutes les 2 morts = -1
+        const PRICES = { shield: 10, ban: 15 };
+
+        // Calcule les points de chaque joueur + le statut de chaque achat, uniquement à partir des parties et des achats enregistrés
+        const computeShop = (players, matches, purchases) => {
+            const startOf = (m) => (m.timestamp || 0) - (m.duration || 0) * 1000;
+            const gamesOf = (playerId) => matches
+                .filter(m => m.playerId === playerId)
+                .sort((a, b) => startOf(a) - startOf(b));
+            const byPlayer = {};
+            const statuses = {};
+
+            players.forEach(pl => {
+                const ms = gamesOf(pl.id);
+                const mine = purchases.filter(x => x.buyerId === pl.id);
+                const shields = mine.filter(x => x.kind === 'shield').sort((a, b) => a.createdAt - b.createdAt);
+
+                // Un bouclier protège la 1re partie lancée APRÈS son achat
+                const shielded = {};
+                shields.forEach(sh => {
+                    const game = ms.find(g => startOf(g) >= sh.createdAt && !shielded[g.matchId]);
+                    if (game) shielded[game.matchId] = sh.id;
+                    else statuses[sh.id] = { state: 'active' };
+                });
+
+                let kills = 0, wins = 0, penalty = 0, saved = 0;
+                ms.forEach(g => {
+                    kills += g.kills || 0;
+                    if (g.win) wins++;
+                    const pen = Math.floor((g.deaths || 0) / POINTS.deathsPerPenalty);
+                    const sid = shielded[g.matchId];
+                    if (sid && !g.win) saved += pen; else penalty += pen;
+                    if (sid) statuses[sid] = { state: 'used', win: !!g.win, saved: g.win ? 0 : pen };
+                });
+
+                const spent = mine.reduce((acc, x) => acc + (x.price || 0), 0);
+                const earned = kills * POINTS.kill + wins * POINTS.win - penalty;
+                byPlayer[pl.id] = {
+                    games: ms.length, kills, wins, penalty, saved, spent, earned,
+                    balance: earned - spent,
+                    activeShields: shields.filter(sh => statuses[sh.id]?.state === 'active').length
+                };
+            });
+
+            // Un ban vaut pour la 1re partie du joueur ciblé lancée après l'achat
+            purchases.filter(x => x.kind === 'ban').forEach(b => {
+                const game = gamesOf(b.targetId).find(g => startOf(g) >= b.createdAt);
+                statuses[b.id] = !game ? { state: 'pending' } : {
+                    state: 'used',
+                    played: game.championName,
+                    violated: (game.championName || '').toLowerCase() === (b.championKey || '').toLowerCase()
+                };
+            });
+
+            return { byPlayer, statuses };
+        };
+
+        const describeStatus = (x, st) => {
+            if (!st) return '';
+            if (x.kind === 'ban') {
+                if (st.state === 'pending') return { text: 'En attente de sa prochaine partie', tone: 'text-zinc-400' };
+                return st.violated
+                    ? { text: `⚠️ Non respecté : a joué ${st.played}`, tone: 'text-red-400' }
+                    : { text: `Respecté (a joué ${st.played})`, tone: 'text-emerald-400' };
+            }
+            if (st.state === 'active') return { text: 'Actif : protège sa prochaine partie', tone: 'text-blue-400' };
+            if (st.win) return { text: 'Gaspillé (partie gagnée)', tone: 'text-zinc-500' };
+            return st.saved > 0
+                ? { text: `A sauvé ${st.saved} point${st.saved > 1 ? 's' : ''}`, tone: 'text-emerald-400' }
+                : { text: 'Utilisé (aucun point à protéger)', tone: 'text-zinc-500' };
+        };
+
+        const ShopView = ({ players, matches, purchases, onBuyShield, onBuyBan }) => {
+            const version = useDdragonVersion();
+            const [buyerId, setBuyerId] = useState(() => { try { return localStorage.getItem('shopBuyer') || ''; } catch { return ''; } });
+            const [targetId, setTargetId] = useState('');
+            const [champ, setChamp] = useState(null);
+            const [search, setSearch] = useState('');
+            const [champs, setChamps] = useState([]);
+            const [busy, setBusy] = useState(false);
+            const [msg, setMsg] = useState(null);
+
+            useEffect(() => {
+                let alive = true;
+                fetch(`https://ddragon.leagueoflegends.com/cdn/${version}/data/fr_FR/champion.json`)
+                    .then(r => r.json())
+                    .then(j => { if (alive) setChamps(Object.values(j.data).map(c => ({ id: c.id, name: c.name })).sort((a, b) => a.name.localeCompare(b.name, 'fr'))); })
+                    .catch(() => {});
+                return () => { alive = false; };
+            }, [version]);
+
+            const { byPlayer, statuses } = useMemo(() => computeShop(players, matches, purchases), [players, matches, purchases]);
+            const board = useMemo(() => [...players].sort((a, b) => (byPlayer[b.id]?.balance ?? 0) - (byPlayer[a.id]?.balance ?? 0)), [players, byPlayer]);
+            const sortedPlayers = useMemo(() => [...players].sort((a, b) => (a.playerName || '').localeCompare(b.playerName || '')), [players]);
+
+            const buyer = players.find(p => p.id === buyerId);
+            const target = players.find(p => p.id === targetId);
+            const balance = buyer ? (byPlayer[buyer.id]?.balance ?? 0) : 0;
+            const bannedForTarget = useMemo(() => new Set(purchases.filter(x => x.kind === 'ban' && x.targetId === targetId).map(x => x.championKey)), [purchases, targetId]);
+            const visibleChamps = champs.filter(c => c.name.toLowerCase().includes(search.toLowerCase()));
+
+            const chooseBuyer = (id) => {
+                setBuyerId(id);
+                try { localStorage.setItem('shopBuyer', id); } catch {}
+                setMsg(null);
+            };
+
+            const run = async (fn, okText) => {
+                setBusy(true); setMsg(null);
+                try { await fn(); setMsg({ ok: true, text: okText }); }
+                catch (e) { setMsg({ ok: false, text: e.message || 'Erreur pendant l\'achat.' }); }
+                finally { setBusy(false); }
+            };
+
+            const buyShield = () => {
+                if (!buyer) return setMsg({ ok: false, text: 'Choisis d\'abord qui tu es.' });
+                if (balance < PRICES.shield) return setMsg({ ok: false, text: `Il te faut ${PRICES.shield} points (tu en as ${balance}).` });
+                run(() => onBuyShield({ buyer, price: PRICES.shield }), 'Bouclier acheté ! Il protège ta prochaine partie. Lance-la après cet achat.');
+            };
+
+            const buyBan = () => {
+                if (!buyer) return setMsg({ ok: false, text: 'Choisis d\'abord qui tu es.' });
+                if (!target) return setMsg({ ok: false, text: 'Choisis le joueur à cibler.' });
+                if (!champ) return setMsg({ ok: false, text: 'Choisis le champion à bannir.' });
+                if (balance < PRICES.ban) return setMsg({ ok: false, text: `Il te faut ${PRICES.ban} points (tu en as ${balance}).` });
+                if (!window.confirm(`Bannir ${champ.name} pour ${target.playerName} ? (${PRICES.ban} points, définitif)`)) return;
+                run(async () => { await onBuyBan({ buyer, target, champ, price: PRICES.ban }); setChamp(null); }, `${champ.name} est banni pour ${target.playerName}.`);
+            };
+
+            const sign = (n) => n > 0 ? `+${n}` : `${n}`;
+            const feed = [...purchases].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 30);
+
+            return (
+                <div className="max-w-5xl mx-auto space-y-8">
+                    <div>
+                        <h2 className="text-2xl font-bold font-heading text-white flex items-center gap-2"><ShoppingBag className="text-zinc-400" /> Boutique à points</h2>
+                        <p className="text-xs text-zinc-400 mt-0.5">+{POINTS.kill} point par kill · +{POINTS.win} par victoire · −1 toutes les {POINTS.deathsPerPenalty} morts. Les points se mettent à jour à chaque synchronisation.</p>
+                    </div>
+
+                    {/* Classement des points (public) */}
+                    <div className="bg-zinc-900/60 rounded-2xl border border-zinc-800 overflow-hidden">
+                        <div className="px-4 py-3 border-b border-zinc-800 font-heading font-bold text-sm uppercase tracking-wider text-zinc-300 flex items-center gap-2"><Coins size={15} /> Points des joueurs</div>
+                        {board.length === 0 && <div className="py-10 text-center text-zinc-500 italic text-sm">Aucun joueur.</div>}
+                        <div className="divide-y divide-zinc-800/60">
+                            {board.map((pl, i) => {
+                                const st = byPlayer[pl.id] || { kills: 0, wins: 0, penalty: 0, saved: 0, spent: 0, balance: 0, games: 0, activeShields: 0 };
+                                return (
+                                    <div key={pl.id} className="px-4 py-3 flex flex-wrap items-center gap-x-4 gap-y-1">
+                                        <div className="w-6 text-center font-heading font-bold text-zinc-500">{i + 1}</div>
+                                        <img src={pl.profileImg || DEFAULT_ICON} alt="" className="w-9 h-9 rounded-full object-cover border border-zinc-700" />
+                                        <div className="min-w-[140px] flex-1">
+                                            <div className="font-bold text-zinc-100 text-sm flex items-center gap-2 flex-wrap">{pl.playerName} <TeamTag team={pl.team} />
+                                                {st.activeShields > 0 && <span className="inline-flex items-center gap-1 text-[10px] font-heading font-bold uppercase px-2 py-0.5 rounded-full border border-blue-500/40 bg-blue-500/10 text-blue-300"><Shield size={10} /> Bouclier</span>}
+                                            </div>
+                                            <div className="text-[11px] text-zinc-500">{st.games} partie{st.games > 1 ? 's' : ''} · {st.kills} kills · {st.wins} victoire{st.wins > 1 ? 's' : ''} · −{st.penalty} morts{st.saved > 0 ? ` (+${st.saved} sauvés)` : ''}{st.spent > 0 ? ` · ${st.spent} dépensés` : ''}</div>
+                                        </div>
+                                        <div className={`font-heading font-black text-2xl ${st.balance < 0 ? 'text-red-400' : 'text-white'}`}>{st.balance} <span className="text-xs font-semibold text-zinc-500">pts</span></div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+
+                    {/* Achat */}
+                    <div className="bg-zinc-900 rounded-2xl border border-zinc-800 p-6 space-y-6">
+                        <div className="flex flex-col sm:flex-row sm:items-end gap-3 justify-between">
+                            <label className="block text-xs text-zinc-400 flex-1 max-w-xs">Acheter en tant que
+                                <select value={buyerId} onChange={e => chooseBuyer(e.target.value)} className="mt-1 w-full bg-zinc-950 border border-zinc-700 rounded-xl px-3 py-2.5 text-sm text-white">
+                                    <option value="">Choisis ton pseudo…</option>
+                                    {sortedPlayers.map(p => <option key={p.id} value={p.id}>{p.playerName}</option>)}
+                                </select>
+                            </label>
+                            {buyer && <div className="text-sm text-zinc-400">Ton solde : <span className={`font-heading font-black text-xl ${balance < 0 ? 'text-red-400' : 'text-white'}`}>{balance} pts</span></div>}
+                        </div>
+
+                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                            {/* Bouclier */}
+                            <div className="rounded-xl border border-zinc-800 bg-zinc-950 p-4 flex flex-col">
+                                <div className="flex items-center gap-2 font-heading font-bold text-zinc-100 mb-1"><Shield size={16} className="text-blue-400" /> Bouclier <span className="ml-auto text-sm text-zinc-300">{PRICES.shield} pts</span></div>
+                                <p className="text-xs text-zinc-400 flex-1">À acheter <b className="text-zinc-200">avant de lancer ta partie</b>. Si tu perds, les points perdus (morts) ne sont pas comptés. Si tu gagnes, il disparaît sans effet.</p>
+                                <button onClick={buyShield} disabled={busy} className="mt-4 w-full bg-zinc-100 hover:bg-white text-zinc-900 font-heading font-bold py-2 rounded-xl text-sm disabled:opacity-50 transition">Acheter le bouclier</button>
+                            </div>
+
+                            {/* Ban */}
+                            <div className="rounded-xl border border-zinc-800 bg-zinc-950 p-4 lg:col-span-2 space-y-3">
+                                <div className="flex items-center gap-2 font-heading font-bold text-zinc-100"><Ban size={16} className="text-red-400" /> Bannir un champion <span className="ml-auto text-sm text-zinc-300">{PRICES.ban} pts</span></div>
+                                <p className="text-xs text-zinc-400">Interdit un champion à un joueur pour sa prochaine partie. Un champion déjà banni pour un joueur ne peut plus jamais être rebanni pour lui.</p>
+                                <select value={targetId} onChange={e => { setTargetId(e.target.value); setChamp(null); }} className="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-3 py-2.5 text-sm text-white">
+                                    <option value="">Joueur ciblé…</option>
+                                    {sortedPlayers.filter(p => p.id !== buyerId).map(p => <option key={p.id} value={p.id}>{p.playerName}</option>)}
+                                </select>
+                                {target && (
+                                    <>
+                                        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Rechercher un champion…" className="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-3 py-2 text-sm text-white placeholder-zinc-500" />
+                                        <div className="max-h-56 overflow-y-auto grid grid-cols-5 sm:grid-cols-8 gap-1.5 pr-1">
+                                            {champs.length === 0 && <div className="col-span-full text-xs text-zinc-500 italic py-4 text-center">Chargement des champions…</div>}
+                                            {visibleChamps.map(c => {
+                                                const taken = bannedForTarget.has(c.id);
+                                                const sel = champ?.id === c.id;
+                                                return (
+                                                    <button key={c.id} disabled={taken} onClick={() => setChamp(c)} title={taken ? `${c.name} : déjà banni pour ${target.playerName}` : c.name}
+                                                        className={`relative rounded-lg overflow-hidden border transition ${sel ? 'border-zinc-100 ring-2 ring-zinc-100' : 'border-zinc-800 hover:border-zinc-500'} ${taken ? 'opacity-30 cursor-not-allowed' : ''}`}>
+                                                        <img src={`https://ddragon.leagueoflegends.com/cdn/${version}/img/champion/${c.id}.png`} alt={c.name} className="w-full aspect-square object-cover" loading="lazy" />
+                                                        {taken && <Ban size={16} className="absolute inset-0 m-auto text-red-400" />}
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>
+                                    </>
+                                )}
+                                <button onClick={buyBan} disabled={busy} className="w-full bg-zinc-100 hover:bg-white text-zinc-900 font-heading font-bold py-2 rounded-xl text-sm disabled:opacity-50 transition">
+                                    {champ && target ? `Bannir ${champ.name} pour ${target.playerName}` : 'Bannir le champion'}
+                                </button>
+                            </div>
+                        </div>
+
+                        {msg && <div className={`text-sm rounded-xl px-4 py-2.5 border ${msg.ok ? 'text-emerald-300 border-emerald-500/30 bg-emerald-500/10' : 'text-red-300 border-red-500/30 bg-red-500/10'}`}>{msg.text}</div>}
+                    </div>
+
+                    {/* Activité */}
+                    <div className="bg-zinc-900/60 rounded-2xl border border-zinc-800 overflow-hidden">
+                        <div className="px-4 py-3 border-b border-zinc-800 font-heading font-bold text-sm uppercase tracking-wider text-zinc-300">Derniers achats</div>
+                        {feed.length === 0 && <div className="py-10 text-center text-zinc-500 italic text-sm">Aucun achat pour l'instant.</div>}
+                        <div className="divide-y divide-zinc-800/60">
+                            {feed.map(x => {
+                                const d = describeStatus(x, statuses[x.id]);
+                                return (
+                                    <div key={x.id} className="px-4 py-3 flex items-center gap-3">
+                                        {x.kind === 'ban'
+                                            ? <img src={`https://ddragon.leagueoflegends.com/cdn/${version}/img/champion/${x.championKey}.png`} alt="" className="w-9 h-9 rounded-lg border border-zinc-700" onError={e => { e.currentTarget.style.visibility = 'hidden'; }} />
+                                            : <div className="w-9 h-9 rounded-lg border border-zinc-700 bg-zinc-900 flex items-center justify-center"><Shield size={16} className="text-blue-400" /></div>}
+                                        <div className="flex-1 min-w-0">
+                                            <div className="text-sm text-zinc-200">
+                                                {x.kind === 'ban'
+                                                    ? <><b>{x.buyerName}</b> a banni <b>{x.championName}</b> pour <b>{x.targetName}</b></>
+                                                    : <><b>{x.buyerName}</b> a acheté un bouclier</>}
+                                            </div>
+                                            {d && <div className={`text-xs ${d.tone}`}>{d.text}</div>}
+                                        </div>
+                                        <div className="text-right shrink-0">
+                                            <div className="text-xs font-bold text-zinc-300">−{x.price} pts</div>
+                                            <div className="text-[11px] text-zinc-500">{formatDate(x.createdAt)}</div>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
         const PlayerEditModal = ({ player, onClose, onSave }) => {
             const [form, setForm] = useState({
                 playerName: player.playerName || '',
@@ -1072,6 +1325,7 @@
             const [toDelete, setToDelete] = useState(null);
             const [toEdit, setToEdit] = useState(null);
             const [history, setHistory] = useState([]);
+            const [purchases, setPurchases] = useState([]);
             const [showReset, setShowReset] = useState(false);
             const [clearHistory, setClearHistory] = useState(false);
             const [resetting, setResetting] = useState(false);
@@ -1095,7 +1349,12 @@
                     snap => setHistory(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
                     err => console.error('Historique :', err)
                 );
-                return () => { unsubP(); unsubC(); unsubH(); };
+                const unsubS = onSnapshot(
+                    query(collection(db, 'history'), where('type', '==', 'purchase')),
+                    snap => setPurchases(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
+                    err => console.error('Boutique :', err)
+                );
+                return () => { unsubP(); unsubC(); unsubH(); unsubS(); };
             }, [user]);
 
             const crud = {
@@ -1103,7 +1362,29 @@
                 update: async (id, data) => updateDoc(doc(db, 'players', id), data),
                 del: async id => deleteDoc(doc(db, 'players', id)),
                 updateConfig: async data => setDoc(doc(db, 'config', 'main'), data, { merge: true }),
-                saveMatch: async (id, data) => setDoc(doc(db, 'history', id), data)
+                saveMatch: async (id, data) => setDoc(doc(db, 'history', id), data),
+                buyShield: async ({ buyer, price }) => {
+                    const now = Date.now();
+                    await addDoc(collection(db, 'history'), {
+                        type: 'purchase', kind: 'shield', buyerId: buyer.id, buyerName: buyer.playerName,
+                        price, createdAt: now, timestamp: now
+                    });
+                },
+                // Identifiant fixe par (joueur ciblé, champion) : impossible de bannir deux fois le même champion pour le même joueur
+                buyBan: async ({ buyer, target, champ, price }) => {
+                    const now = Date.now();
+                    const ref = doc(db, 'history', `ban_${target.id}_${champ.id}`);
+                    await runTransaction(db, async tx => {
+                        const snap = await tx.get(ref);
+                        if (snap.exists()) throw new Error(`${champ.name} est déjà banni pour ${target.playerName} : impossible de le rebannir.`);
+                        tx.set(ref, {
+                            type: 'purchase', kind: 'ban', buyerId: buyer.id, buyerName: buyer.playerName,
+                            targetId: target.id, targetName: target.playerName,
+                            championKey: champ.id, championName: champ.name,
+                            price, createdAt: now, timestamp: now
+                        });
+                    });
+                }
             };
 
             // Remet tous les compteurs LP à 0 : le LP actuel devient le nouveau point de départ
@@ -1167,6 +1448,7 @@
                                 <button onClick={() => setTab('classement')} className={`px-4 py-1.5 rounded-lg text-xs font-heading font-bold uppercase transition ${tab === 'classement' ? 'bg-zinc-100 text-zinc-900' : 'text-zinc-400 hover:text-white'}`}>Classement</button>
                                 <button onClick={() => setTab('joueurs')} className={`px-4 py-1.5 rounded-lg text-xs font-heading font-bold uppercase transition ${tab === 'joueurs' ? 'bg-zinc-100 text-zinc-900' : 'text-zinc-400 hover:text-white'}`}>Joueurs</button>
                                 <button onClick={() => setTab('historique')} className={`px-4 py-1.5 rounded-lg text-xs font-heading font-bold uppercase transition ${tab === 'historique' ? 'bg-zinc-100 text-zinc-900' : 'text-zinc-400 hover:text-white'}`}>Historique</button>
+                                <button onClick={() => setTab('boutique')} className={`px-4 py-1.5 rounded-lg text-xs font-heading font-bold uppercase transition ${tab === 'boutique' ? 'bg-zinc-100 text-zinc-900' : 'text-zinc-400 hover:text-white'}`}>Boutique</button>
                                 <button onClick={() => setTab('reglement')} className={`px-4 py-1.5 rounded-lg text-xs font-heading font-bold uppercase transition ${tab === 'reglement' ? 'bg-zinc-100 text-zinc-900' : 'text-zinc-400 hover:text-white'}`}>Règles</button>
                                 {isAdmin && <button onClick={() => setTab('admin')} className={`px-4 py-1.5 rounded-lg text-xs font-heading font-bold uppercase transition ${tab === 'admin' ? 'bg-zinc-100 text-zinc-900' : 'text-zinc-400 hover:text-white'}`}>Admin</button>}
                                 
@@ -1185,6 +1467,7 @@
                         {tab === 'classement' && <Leaderboard players={players} isAdmin={isAdmin} onRequestDelete={setToDelete} onRequestEdit={setToEdit} />}
                         {tab === 'joueurs' && <PlayersList players={players} />}
                         {tab === 'historique' && <HistoryView history={history} players={players} />}
+                        {tab === 'boutique' && <ShopView players={players} matches={history.filter(h => h.type === 'match')} purchases={purchases} onBuyShield={crud.buyShield} onBuyBan={crud.buyBan} />}
                         {tab === 'reglement' && <RulesView config={config} />}
                         {tab === 'admin' && isAdmin && (
                             <AdminPanel
@@ -1243,7 +1526,7 @@
                                 <p className="text-xs text-zinc-400 mb-4">Tous les joueurs et les deux équipes repartent à 0 LP à partir de leur rang actuel.</p>
                                 <label className="flex items-center justify-center gap-2 text-xs text-zinc-300 mb-6 cursor-pointer">
                                     <input type="checkbox" checked={clearHistory} onChange={e => setClearHistory(e.target.checked)} className="accent-red-500" />
-                                    Vider aussi l'historique des parties
+                                    Vider aussi l'historique et la boutique
                                 </label>
                                 <div className="flex gap-3">
                                     <button onClick={() => { setShowReset(false); setClearHistory(false); }} className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-white font-heading font-bold py-2 rounded-xl text-sm">Annuler</button>
