@@ -56,7 +56,7 @@
         } from 'lucide-react';
         import { initializeApp } from 'firebase/app';
         import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
-        import { getFirestore, doc, setDoc, onSnapshot, collection, addDoc, updateDoc, deleteDoc, query, orderBy, limit, writeBatch, getDocs, where, runTransaction } from 'firebase/firestore';
+        import { getFirestore, doc, setDoc, onSnapshot, collection, addDoc, updateDoc, deleteDoc, query, orderBy, limit, writeBatch, getDocs, where, runTransaction, serverTimestamp } from 'firebase/firestore';
 
         const firebaseConfig = {
             apiKey: "AIzaSyBwNrlXY81VOXtp2EGyFb_k3OWHKbtcY2o",
@@ -727,7 +727,7 @@
 
         // Calcule les points de chaque joueur + le statut de chaque achat, uniquement à partir des parties et des achats enregistrés
         const computeShop = (players, matches, purchases) => {
-            const startOf = (m) => (m.timestamp || 0) - (m.duration || 0) * 1000;
+            const startOf = (m) => m.gameCreation || ((m.timestamp || 0) - (m.duration || 0) * 1000);
             const gamesOf = (playerId) => matches
                 .filter(m => m.playerId === playerId)
                 .sort((a, b) => startOf(a) - startOf(b));
@@ -789,7 +789,7 @@
 
         // Effets sur les LP (quitte ou double, +10/-10 LP) et vérification des summoners inversés
         const computeEffects = (players, matches, purchases) => {
-            const startOf = (m) => (m.timestamp || 0) - (m.duration || 0) * 1000;
+            const startOf = (m) => m.gameCreation || ((m.timestamp || 0) - (m.duration || 0) * 1000);
             const gamesOf = (playerId) => matches.filter(m => m.playerId === playerId).sort((a, b) => startOf(a) - startOf(b));
             const lpAdjust = {};
             const statuses = {};
@@ -1347,6 +1347,7 @@
                                     playerId: p.id,
                                     playerName: p.playerName,
                                     team: p.team || '',
+                                    gameCreation: info.gameCreation || null,
                                     timestamp: info.gameEndTimestamp || (info.gameCreation + (info.gameDuration || 0) * 1000),
                                     duration: info.gameDuration || 0,
                                     queueId: info.queueId,
@@ -1383,7 +1384,7 @@
                             startAbsoluteLP: startLP,
                             currentAbsoluteLP: currentAbsLP,
                             lpDelta: newDelta,
-                            historySince: Math.max(p.historySince || 0, syncStart - 600)
+                            historySince: Math.max(p.historySince || 0, syncStart - 7200)
                         });
                         success++;
                         await new Promise(r => setTimeout(r, 200));
@@ -1537,7 +1538,11 @@
                 );
                 const unsubS = onSnapshot(
                     query(collection(db, 'history'), where('type', '==', 'purchase')),
-                    snap => setPurchases(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
+                    snap => setPurchases(snap.docs.map(d => {
+                        const data = d.data({ serverTimestamps: 'estimate' });
+                        const toMs = v => (v && typeof v.toMillis === 'function') ? v.toMillis() : v;
+                        return { id: d.id, ...data, createdAt: toMs(data.createdAt) };
+                    })),
                     err => console.error('Boutique :', err)
                 );
                 return () => { unsubP(); unsubC(); unsubH(); unsubS(); };
@@ -1545,9 +1550,10 @@
 
             // Alerte Discord (via /api/discord) : ne bloque jamais l'achat si elle échoue
             const notifyDiscord = (payload) => {
-                try {
-                    fetch('/api/discord', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }).catch(() => {});
-                } catch {}
+                const send = (retry) => fetch('/api/discord', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), keepalive: true
+                }).then(r => { if (!r.ok && retry) setTimeout(() => send(false), 2000); }).catch(() => { if (retry) setTimeout(() => send(false), 2000); });
+                try { send(true); } catch {}
             };
 
             const crud = {
@@ -1569,7 +1575,7 @@
                     const purchaseRef = kind === 'ban' ? doc(db, 'history', `ban_${target.id}_${champ.id}_${day}`)
                         : kind === 'lpmove' ? doc(db, 'history', `lpmove_${buyer.id}`)
                         : doc(collection(db, 'history'));
-                    const data = { type: 'purchase', kind, buyerId: buyer.id, buyerName: buyer.playerName, price, category, day, createdAt: now, timestamp: now };
+                    const data = { type: 'purchase', kind, buyerId: buyer.id, buyerName: buyer.playerName, price, category, day, createdAt: serverTimestamp(), timestamp: now };
                     if (mode) data.mode = mode;
                     if (target) { data.targetId = target.id; data.targetName = target.playerName; }
                     if (champ) { data.championKey = champ.id; data.championName = champ.name; }

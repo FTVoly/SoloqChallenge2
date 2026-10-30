@@ -70,7 +70,8 @@ export default async function handler(req, res) {
       color: BONUS,
     };
   }
-  embed.footer = { text: `${price} pts · SoloQ Challenge` };
+  const isBonus = kind === 'shield' || kind === 'double' || (kind === 'lpmove' && mode === 'gain');
+  embed.footer = { text: `${isBonus ? 'Bonus' : 'Malus'} · ${price} pts · SoloQ Challenge` };
   embed.timestamp = new Date().toISOString();
 
   try {
