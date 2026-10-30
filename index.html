@@ -627,7 +627,6 @@
         const HistoryView = ({ history, players }) => {
             const [playerFilter, setPlayerFilter] = useState('all');
             const [teamFilter, setTeamFilter] = useState('all');
-            const [limitRows, setLimitRows] = useState(40);
             const version = useDdragonVersion();
 
             const playerById = useMemo(() => Object.fromEntries(players.map(p => [p.id, p])), [players]);
@@ -644,6 +643,25 @@
                 return true;
             }), [matches, playerFilter, teamFilter, playerById]);
 
+            // 100 dernières parties (déjà triées de la plus récente à la plus ancienne), regroupées par jour
+            const shown = useMemo(() => filtered.slice(0, 100), [filtered]);
+            const total = useMemo(() => ({ w: shown.filter(h => h.win).length, l: shown.filter(h => !h.win).length }), [shown]);
+            const groups = useMemo(() => {
+                const map = new Map();
+                shown.forEach(h => {
+                    const d = new Date(h.timestamp);
+                    const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+                    if (!map.has(key)) {
+                        const label = d.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
+                        map.set(key, { key, label: label.charAt(0).toUpperCase() + label.slice(1), items: [], w: 0, l: 0 });
+                    }
+                    const g = map.get(key);
+                    g.items.push(h);
+                    if (h.win) g.w++; else g.l++;
+                });
+                return [...map.values()];
+            }, [shown]);
+
             return (
                 <div className="max-w-6xl mx-auto space-y-6">
                     <div className="flex flex-col sm:flex-row justify-between items-start sm:items-end gap-4">
@@ -651,7 +669,7 @@
                             <h2 className="text-2xl font-bold font-heading text-white flex items-center gap-2">
                                 <History className="text-zinc-400" /> Historique des parties
                             </h2>
-                            <p className="text-xs text-zinc-400 mt-0.5">Les parties classées solo/duo de tous les joueurs, de la plus récente à la plus ancienne.</p>
+                            <p className="text-xs text-zinc-400 mt-0.5">Les 100 dernières parties classées solo/duo de tous les joueurs, triées par date, avec le bilan de chaque jour.</p>
                         </div>
                         <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
                             <select value={teamFilter} onChange={e => setTeamFilter(e.target.value)} className="bg-zinc-900 border border-zinc-700/70 rounded-xl px-3 py-2 text-sm text-zinc-200">
@@ -668,16 +686,35 @@
                         </div>
                     </div>
 
-                    <div className="space-y-2">
-                        {filtered.length === 0 && (
+                    {shown.length > 0 && (
+                        <div className="flex items-center gap-3 text-xs text-zinc-400">
+                            <span>{shown.length} dernière{shown.length > 1 ? 's' : ''} partie{shown.length > 1 ? 's' : ''}</span>
+                            <span className="text-zinc-700">·</span>
+                            <span><span className="text-blue-400 font-bold">{total.w}V</span> / <span className="text-red-400 font-bold">{total.l}D</span></span>
+                            <span className="text-zinc-700">·</span>
+                            <span>{calculateWR(total.w, total.l)}% WR</span>
+                        </div>
+                    )}
+
+                    <div className="space-y-6">
+                        {shown.length === 0 && (
                             <div className="bg-zinc-900/60 rounded-2xl border border-zinc-800 py-12 text-center text-zinc-500 italic text-sm">Aucune partie pour l'instant. Elles apparaissent après une synchronisation.</div>
                         )}
-                        {filtered.slice(0, limitRows).map(h => (
-                            <MatchRow key={h.id} h={h} player={playerById[h.playerId]} version={version} />
+                        {groups.map(g => (
+                            <div key={g.key} className="space-y-2">
+                                <div className="flex items-center justify-between border-b border-zinc-800 pb-1.5">
+                                    <h3 className="font-heading text-sm font-bold text-zinc-200 tracking-wide">{g.label}</h3>
+                                    <div className="text-xs font-bold">
+                                        <span className="text-blue-400">{g.w} victoire{g.w > 1 ? 's' : ''}</span>
+                                        <span className="text-zinc-600 mx-1.5">/</span>
+                                        <span className="text-red-400">{g.l} défaite{g.l > 1 ? 's' : ''}</span>
+                                    </div>
+                                </div>
+                                {g.items.map(h => (
+                                    <MatchRow key={h.id} h={h} player={playerById[h.playerId]} version={version} />
+                                ))}
+                            </div>
                         ))}
-                        {filtered.length > limitRows && (
-                            <button onClick={() => setLimitRows(l => l + 40)} className="w-full py-2.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-sm font-heading font-bold uppercase text-zinc-300 transition">Voir plus</button>
-                        )}
                     </div>
                 </div>
             );
@@ -855,7 +892,7 @@
                         const hasPrevious = p.currentAbsoluteLP !== undefined && p.currentAbsoluteLP !== null;
                         try {
                             const ids = await riot({
-                                type: 'matchids', value: accData.puuid, queue: '420', count: '5',
+                                type: 'matchids', value: accData.puuid, queue: '420', count: '20',
                                 ...(p.historySince ? { startTime: String(p.historySince) } : {})
                             });
                             const known = new Set(matches.filter(m => m.playerId === p.id).map(m => m.matchId));
