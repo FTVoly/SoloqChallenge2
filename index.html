@@ -852,6 +852,36 @@
             return out;
         };
 
+        // ---------- Limites d'achat (modifiables dans l'Admin, par défaut ou par joueur) ----------
+        // null = illimité ; sinon nombre maximum. Valeurs par défaut : 1 bonus + 1 malus par jour, ±10 LP une seule fois
+        const parseJson = (s) => { try { return (s && JSON.parse(s)) || {}; } catch { return {}; } };
+        const DEFAULT_LIMITS = { catDay: { bonus: 1, malus: 1 }, kinds: { lpmove: { total: 1 } } };
+        const firstDefined = (...v) => v.find(x => x !== undefined);
+        const explicitLimits = (L) => ({
+            catDay: { bonus: firstDefined(L?.catDay?.bonus, DEFAULT_LIMITS.catDay.bonus), malus: firstDefined(L?.catDay?.malus, DEFAULT_LIMITS.catDay.malus) },
+            kinds: Object.fromEntries(Object.keys(DEFAULT_PRICES).map(k => [k, {
+                day: firstDefined(L?.kinds?.[k]?.day, DEFAULT_LIMITS.kinds[k]?.day, null),
+                total: firstDefined(L?.kinds?.[k]?.total, DEFAULT_LIMITS.kinds[k]?.total, null)
+            }]))
+        });
+        const effLimits = (config, pid) => {
+            const base = explicitLimits(parseJson(config?.limitsJson));
+            const per = parseJson(config?.playerLimitsJson)[pid] || {};
+            return {
+                cat: (c) => firstDefined(per.catDay?.[c], base.catDay[c]),
+                kind: (k, f) => firstDefined(per.kinds?.[k]?.[f], base.kinds[k]?.[f], null)
+            };
+        };
+        // Compteurs déjà connus côté site (achats réels uniquement, les tests ne comptent pas)
+        const countsFor = (purchases, buyerId, day) => {
+            const c = { cat: { bonus: 0, malus: 0 }, kd: {}, kt: {} };
+            purchases.filter(x => !x.test && x.buyerId === buyerId).forEach(x => {
+                c.kt[x.kind] = (c.kt[x.kind] || 0) + 1;
+                if (parisDay(x.createdAt) === day) { c.cat[categoryOf(x.kind, x.mode)]++; c.kd[x.kind] = (c.kd[x.kind] || 0) + 1; }
+            });
+            return c;
+        };
+
         // Effets sur les LP (quitte ou double, +10/-10 LP) et vérification des summoners inversés
         const computeEffects = (players, matches, purchases) => {
             const startOf = (m) => m.gameCreation || ((m.timestamp || 0) - (m.duration || 0) * 1000);
@@ -950,7 +980,7 @@
             </div>
         );
 
-        const ShopView = ({ players, matches, purchases, effects, prices, onBuy, isAdmin, testMode, onCancel }) => {
+        const ShopView = ({ players, matches, purchases, effects, prices, config, onBuy, isAdmin, testMode, onCancel }) => {
             const version = useDdragonVersion();
             const [buyerId, setBuyerId] = useState(() => { try { return localStorage.getItem('shopBuyer') || ''; } catch { return ''; } });
             const [targetId, setTargetId] = useState('');
@@ -981,9 +1011,14 @@
             const target = players.find(p => p.id === targetId);
             const balance = buyer ? (byPlayer[buyer.id]?.balance ?? 0) : 0;
             const today = parisDay(Date.now());
-            const slotUsed = (cat) => !free && !!buyer && purchases.some(x => !x.test && x.buyerId === buyer.id && categoryOf(x.kind, x.mode) === cat && parisDay(x.createdAt) === today);
+            const lim = useMemo(() => effLimits(config, buyerId), [config, buyerId]);
+            const cnt = useMemo(() => countsFor(purchases, buyerId, today), [purchases, buyerId, today]);
+            const reached = (max, n) => max !== null && max !== undefined && n >= max;
+            const slotUsed = (cat) => !free && !!buyer && reached(lim.cat(cat), cnt.cat[cat]);
+            const kindFull = (k) => !free && !!buyer && (reached(lim.kind(k, 'day'), cnt.kd[k] || 0) || reached(lim.kind(k, 'total'), cnt.kt[k] || 0));
             const bonusUsed = slotUsed('bonus'), malusUsed = slotUsed('malus');
-            const lpmoveUsed = !free && !!buyer && purchases.some(x => !x.test && x.kind === 'lpmove' && x.buyerId === buyer.id);
+            const lpmoveUsed = kindFull('lpmove');
+            const fmtLim = (v) => (v === null || v === undefined) ? '∞' : v;
             const bannedToday = useMemo(() => new Set(free ? [] : purchases.filter(x => !x.test && x.kind === 'ban' && x.targetId === targetId && parisDay(x.createdAt) === today).map(x => x.championKey)), [purchases, targetId, today, free]);
             const visibleChamps = champs.filter(c => c.name.toLowerCase().includes(search.toLowerCase()));
 
@@ -1001,15 +1036,15 @@
                 if (!buyer) return fail('Choisis d\'abord qui tu es.');
                 if (cat === 'malus' && !target) return fail('Choisis d\'abord le joueur ciblé.');
                 if (kind === 'ban' && !champ) return fail('Choisis le champion à bannir.');
-                if (kind === 'lpmove' && lpmoveUsed) return fail(`Tu as déjà utilisé ton coup de ${LPMOVE_LP} LP (une seule fois dans tout le challenge).`);
-                if (slotUsed(cat)) return fail(`Tu as déjà acheté ton ${cat} aujourd'hui (1 ${cat} par jour).`);
+                if (kindFull(kind)) return fail(`Tu as atteint la limite d'achats pour cet objet (${fmtLim(lim.kind(kind, 'day'))} par jour, ${fmtLim(lim.kind(kind, 'total'))} dans tout le challenge).`);
+                if (slotUsed(cat)) return fail(`Tu as atteint ta limite de ${fmtLim(lim.cat(cat))} ${cat}${lim.cat(cat) > 1 ? 's' : ''} par jour.`);
                 if (!free && balance < price) return fail(`Il te faut ${price} points (tu en as ${balance}).`);
                 const label = {
                     shield: 'Acheter un bouclier',
                     double: 'Jouer quitte ou double sur ta prochaine partie',
                     ban: `Bannir ${champ?.name} pour ${target?.playerName}`,
                     spells: `Inverser les summoners de ${target?.playerName}`,
-                    lpmove: mode === 'gain' ? `Gagner ${LPMOVE_LP} LP (usage unique dans tout le challenge)` : `Faire perdre ${LPMOVE_LP} LP à ${target?.playerName} (usage unique dans tout le challenge)`
+                    lpmove: mode === 'gain' ? `Gagner ${LPMOVE_LP} LP ` : `Faire perdre ${LPMOVE_LP} LP à ${target?.playerName}`
                 }[kind];
                 if (!window.confirm(`${label} ? (${free ? 'mode test : gratuit' : price + ' points'})`)) return;
                 setBusy(true); setMsg(null);
@@ -1090,21 +1125,21 @@
                             {buyer && (
                                 <div className="text-sm text-zinc-400 space-y-1 sm:text-right">
                                     <div>Ton solde : {free ? <span className="font-heading font-black text-xl text-amber-300">∞ pts</span> : <span className={`font-heading font-black text-xl ${balance < 0 ? 'text-red-400' : 'text-white'}`}>{balance} pts</span>}</div>
-                                    <div className="text-xs">Aujourd'hui : bonus <b className={bonusUsed ? 'text-zinc-500' : 'text-emerald-400'}>{bonusUsed ? 'utilisé' : 'disponible'}</b> · malus <b className={malusUsed ? 'text-zinc-500' : 'text-emerald-400'}>{malusUsed ? 'utilisé' : 'disponible'}</b></div>
+                                    <div className="text-xs">Aujourd'hui : bonus <b className={bonusUsed ? 'text-zinc-500' : 'text-emerald-400'}>{cnt.cat.bonus}/{fmtLim(lim.cat('bonus'))}</b> · malus <b className={malusUsed ? 'text-zinc-500' : 'text-emerald-400'}>{cnt.cat.malus}/{fmtLim(lim.cat('malus'))}</b></div>
                                 </div>
                             )}
                         </div>
-                        <p className="text-xs text-zinc-500">Chaque joueur peut acheter <b className="text-zinc-300">1 bonus</b> et <b className="text-zinc-300">1 malus</b> par jour (remise à zéro à minuit, heure de Paris).</p>
+                        <p className="text-xs text-zinc-500">Limites par défaut : <b className="text-zinc-300">1 bonus</b> et <b className="text-zinc-300">1 malus</b> par jour (remise à zéro à minuit, heure de Paris), coup de ±{LPMOVE_LP} LP une seule fois. L'organisateur peut les modifier, y compris par joueur.</p>
 
                         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                             {/* BONUS */}
                             <div className="space-y-3">
                                 <div className="font-heading font-bold text-sm uppercase tracking-wider text-blue-300 flex items-center gap-2"><Shield size={14} /> Bonus · pour toi</div>
-                                <ItemCard icon={<Shield size={16} className="text-blue-400" />} title="Bouclier" price={prices.shield} busy={busy} disabled={bonusUsed} btnLabel="Acheter le bouclier" onBuy={() => buy('shield')}
+                                <ItemCard icon={<Shield size={16} className="text-blue-400" />} title="Bouclier" price={prices.shield} busy={busy} disabled={bonusUsed || kindFull('shield')} btnLabel="Acheter le bouclier" onBuy={() => buy('shield')}
                                     desc={<>À acheter <b className="text-zinc-200">avant de lancer ta partie</b>. Si tu perds, les points perdus (morts) ne sont pas comptés. Si tu gagnes, il disparaît sans effet.</>} />
-                                <ItemCard icon={<Dices size={16} className="text-blue-400" />} title="Quitte ou double" price={prices.double} busy={busy} disabled={bonusUsed} btnLabel="Jouer quitte ou double" onBuy={() => buy('double')}
+                                <ItemCard icon={<Dices size={16} className="text-blue-400" />} title="Quitte ou double" price={prices.double} busy={busy} disabled={bonusUsed || kindFull('double')} btnLabel="Jouer quitte ou double" onBuy={() => buy('double')}
                                     desc={<>À acheter <b className="text-zinc-200">avant ta partie</b>. Victoire : tu gagnes 2× les LP. Défaite : tu perds 2× les LP.</>} />
-                                <ItemCard icon={<Zap size={16} className="text-blue-400" />} title={`Coup de pouce +${LPMOVE_LP} LP`} price={prices.lpmove} busy={busy} disabled={bonusUsed || lpmoveUsed} btnLabel={lpmoveUsed ? 'Déjà utilisé' : `Gagner ${LPMOVE_LP} LP`} onBuy={() => buy('lpmove', 'gain')}
+                                <ItemCard icon={<Zap size={16} className="text-blue-400" />} title={`Coup de pouce +${LPMOVE_LP} LP`} price={prices.lpmove} busy={busy} disabled={bonusUsed || lpmoveUsed} btnLabel={lpmoveUsed ? 'Limite atteinte' : `Gagner ${LPMOVE_LP} LP`} onBuy={() => buy('lpmove', 'gain')}
                                     desc={<>Tu gagnes {LPMOVE_LP} LP directement. <b className="text-zinc-200">Une seule fois dans tout le challenge</b> (au choix avec le sabotage).</>} />
                             </div>
 
@@ -1116,7 +1151,7 @@
                                     {sortedPlayers.filter(p => p.id !== buyerId).map(p => <option key={p.id} value={p.id}>{p.playerName}</option>)}
                                 </select>
 
-                                <ItemCard icon={<Ban size={16} className="text-red-400" />} title="Bannir un champion" price={prices.ban} busy={busy} disabled={malusUsed || !target || !champ} btnLabel={champ && target ? `Bannir ${champ.name} pour ${target.playerName}` : 'Bannir le champion'} onBuy={() => buy('ban')}
+                                <ItemCard icon={<Ban size={16} className="text-red-400" />} title="Bannir un champion" price={prices.ban} busy={busy} disabled={malusUsed || kindFull('ban') || !target || !champ} btnLabel={champ && target ? `Bannir ${champ.name} pour ${target.playerName}` : 'Bannir le champion'} onBuy={() => buy('ban')}
                                     desc="Interdit un champion à ce joueur pour sa prochaine partie. Un même champion ne peut être banni qu'une fois par jour pour un joueur.">
                                     {target && (
                                         <>
@@ -1144,10 +1179,10 @@
                                     )}
                                 </ItemCard>
 
-                                <ItemCard icon={<ArrowLeftRight size={16} className="text-red-400" />} title="Summoners inversés" price={prices.spells} busy={busy} disabled={malusUsed || !target} btnLabel={target ? `Inverser ceux de ${target.playerName}` : 'Inverser les summoners'} onBuy={() => buy('spells')}
+                                <ItemCard icon={<ArrowLeftRight size={16} className="text-red-400" />} title="Summoners inversés" price={prices.spells} busy={busy} disabled={malusUsed || kindFull('spells') || !target} btnLabel={target ? `Inverser ceux de ${target.playerName}` : 'Inverser les summoners'} onBuy={() => buy('spells')}
                                     desc="Le joueur ciblé doit jouer sa prochaine partie avec ses sorts d'invocateur inversés (par exemple Saut éclair sur D au lieu de F)." />
 
-                                <ItemCard icon={<Skull size={16} className="text-red-400" />} title={`Sabotage −${LPMOVE_LP} LP`} price={prices.lpmove} busy={busy} disabled={malusUsed || lpmoveUsed || !target} btnLabel={lpmoveUsed ? 'Déjà utilisé' : (target ? `Retirer ${LPMOVE_LP} LP à ${target.playerName}` : `Retirer ${LPMOVE_LP} LP`)} onBuy={() => buy('lpmove', 'drain')}
+                                <ItemCard icon={<Skull size={16} className="text-red-400" />} title={`Sabotage −${LPMOVE_LP} LP`} price={prices.lpmove} busy={busy} disabled={malusUsed || lpmoveUsed || !target} btnLabel={lpmoveUsed ? 'Limite atteinte' : (target ? `Retirer ${LPMOVE_LP} LP à ${target.playerName}` : `Retirer ${LPMOVE_LP} LP`)} onBuy={() => buy('lpmove', 'drain')}
                                     desc={<>Le joueur ciblé perd {LPMOVE_LP} LP directement. <b className="text-zinc-200">Une seule fois dans tout le challenge</b> (au choix avec le coup de pouce).</>} />
                             </div>
                         </div>
@@ -1307,7 +1342,7 @@
             const [vals, setVals] = useState(fromConfig);
             const [saved, setSaved] = useState(false);
             useEffect(() => { setVals(fromConfig()); }, [config]);
-            const labels = { shield: 'Bouclier', double: 'Quitte ou double', ban: 'Bannir un champion', spells: 'Summoners inversés', lpmove: '±10 LP (usage unique)' };
+            const labels = { shield: 'Bouclier', double: 'Quitte ou double', ban: 'Bannir un champion', spells: 'Summoners inversés', lpmove: '±10 LP' };
             const save = async () => {
                 const prices = Object.fromEntries(Object.keys(DEFAULT_PRICES).map(k => [k, Math.max(0, Math.round(Number(vals[k]) || 0))]));
                 await onUpdateConfig({ prices });
@@ -1326,6 +1361,71 @@
                         ))}
                     </div>
                     <button onClick={save} className="w-full bg-zinc-100 hover:bg-white text-zinc-900 font-heading font-bold py-2.5 rounded-xl transition">{saved ? 'Enregistré ✓' : 'Enregistrer les prix'}</button>
+                </div>
+            );
+        };
+
+        // ---------- Admin : limites d'achat (par défaut + par joueur) ----------
+        const LimitCell = ({ value, onChange, inheritable, placeholder }) => (
+            <div className="flex gap-1">
+                <input type="number" min="0" value={value === null || value === undefined ? '' : value}
+                    placeholder={value === null ? '∞' : (placeholder ?? '∞')}
+                    onChange={e => onChange(e.target.value === '' ? (inheritable ? undefined : null) : Math.max(0, Math.floor(Number(e.target.value))))}
+                    className="w-full min-w-0 bg-zinc-950 border border-zinc-700 rounded-lg px-2 py-1.5 text-sm text-white" />
+                <button type="button" title="Illimité" onClick={() => onChange(value === null ? (inheritable ? undefined : 1) : null)}
+                    className={`px-2 rounded-lg border text-sm ${value === null ? 'bg-amber-500/20 border-amber-500/50 text-amber-300' : 'border-zinc-700 text-zinc-500 hover:text-zinc-300'}`}>∞</button>
+            </div>
+        );
+
+        const LimitsEditor = ({ config, players, onUpdateConfig }) => {
+            const [base, setBase] = useState(() => explicitLimits(parseJson(config?.limitsJson)));
+            const [per, setPer] = useState(() => parseJson(config?.playerLimitsJson));
+            const [pid, setPid] = useState('');
+            const [saved, setSaved] = useState(false);
+            useEffect(() => { setBase(explicitLimits(parseJson(config?.limitsJson))); setPer(parseJson(config?.playerLimitsJson)); }, [config]);
+            const names = { shield: 'Bouclier', double: 'Quitte ou double', ban: 'Bannir un champion', spells: 'Summoners inversés', lpmove: '±10 LP (coup de pouce / sabotage)' };
+            const rows = [{ cat: 'bonus', label: 'Bonus au total par jour' }, { cat: 'malus', label: 'Malus au total par jour' }, ...Object.keys(DEFAULT_PRICES).map(k => ({ kind: k, label: names[k] }))];
+            const get = (L, r, f) => r.cat ? L.catDay?.[r.cat] : L.kinds?.[r.kind]?.[f];
+            const set = (L, r, f, v) => r.cat ? { ...L, catDay: { ...L.catDay, [r.cat]: v } } : { ...L, kinds: { ...L.kinds, [r.kind]: { ...L.kinds?.[r.kind], [f]: v } } };
+            const mine = pid ? (per[pid] || {}) : {};
+            const setMine = (r, f, v) => setPer({ ...per, [pid]: set(mine, r, f, v) });
+            const save = async () => {
+                const cleaned = Object.fromEntries(Object.entries(per).filter(([id, L]) => players.some(p => p.id === id) && JSON.stringify(L) !== '{}' && JSON.stringify(L) !== '{"catDay":{},"kinds":{}}'));
+                await onUpdateConfig({ limitsJson: JSON.stringify(base), playerLimitsJson: JSON.stringify(cleaned) });
+                setSaved(true); setTimeout(() => setSaved(false), 2000);
+            };
+            const grid = (L, edit, inheritable, ref) => (
+                <div className="space-y-2">
+                    <div className="hidden sm:grid grid-cols-[1fr_110px_130px] gap-3 text-[11px] uppercase tracking-wide text-zinc-500 px-1"><span></span><span>Par jour</span><span>Dans tout le challenge</span></div>
+                    {rows.map(r => (
+                        <div key={r.cat || r.kind} className="grid grid-cols-1 sm:grid-cols-[1fr_110px_130px] gap-1 sm:gap-3 items-center">
+                            <span className="text-sm text-zinc-300">{r.label}</span>
+                            <LimitCell value={get(L, r, 'day')} inheritable={inheritable} placeholder={ref ? String(get(ref, r, 'day') ?? '∞') : undefined} onChange={v => edit(r, 'day', v)} />
+                            {r.cat ? <span className="text-xs text-zinc-600 hidden sm:block">—</span> : <LimitCell value={get(L, r, 'total')} inheritable={inheritable} placeholder={ref ? String(get(ref, r, 'total') ?? '∞') : undefined} onChange={v => edit(r, 'total', v)} />}
+                        </div>
+                    ))}
+                </div>
+            );
+            return (
+                <div className="bg-zinc-900 p-6 rounded-2xl border border-zinc-800">
+                    <h3 className="font-heading text-xl font-bold text-white flex items-center gap-2 mb-1"><Settings className="text-zinc-400" /> Limites d'achat</h3>
+                    <p className="text-xs text-zinc-400 mb-4">Nombre d'achats autorisés par joueur. Case vide ou ∞ = illimité. Le « par jour » se remet à zéro à minuit (heure de Paris). Les modifications s'appliquent aux prochains achats.</p>
+                    <div className="text-xs font-bold text-zinc-300 uppercase tracking-wide mb-2">Pour tout le monde</div>
+                    {grid(base, (r, f, v) => setBase(set(base, r, f, v)), false, null)}
+                    <div className="border-t border-zinc-800 my-5"></div>
+                    <div className="text-xs font-bold text-zinc-300 uppercase tracking-wide mb-2">Exception pour un joueur</div>
+                    <select value={pid} onChange={e => setPid(e.target.value)} className="w-full bg-zinc-950 border border-zinc-700/70 rounded-xl px-3 py-2 text-sm text-zinc-200 mb-3">
+                        <option value="">Choisir un joueur…</option>
+                        {[...players].sort((a, b) => (a.playerName || '').localeCompare(b.playerName || '')).map(p => <option key={p.id} value={p.id}>{p.playerName}{per[p.id] && JSON.stringify(per[p.id]) !== '{}' ? ' •' : ''}</option>)}
+                    </select>
+                    {pid && (
+                        <>
+                            <p className="text-xs text-zinc-500 mb-2">Case vide = valeur de tout le monde (affichée en gris).</p>
+                            {grid(mine, setMine, true, base)}
+                            <button type="button" onClick={() => { const n = { ...per }; delete n[pid]; setPer(n); }} className="mt-3 text-xs text-zinc-400 hover:text-white underline">Retirer les exceptions de ce joueur</button>
+                        </>
+                    )}
+                    <button onClick={save} className="mt-5 w-full bg-zinc-100 hover:bg-white text-zinc-900 font-heading font-bold py-2.5 rounded-xl transition">{saved ? 'Enregistré ✓' : 'Enregistrer les limites'}</button>
                 </div>
             );
         };
@@ -1364,7 +1464,7 @@
             return (
                 <div className="bg-zinc-900 p-6 rounded-2xl border border-zinc-800">
                     <h3 className="font-heading text-xl font-bold text-white flex items-center gap-2 mb-2"><RotateCcw className="text-zinc-400" /> Réinitialiser les points boutique</h3>
-                    <p className="text-xs text-zinc-400 mb-4">Remet le solde de points à 0 (tous les joueurs ou un seul). Les parties et achats passés ne comptent plus ; les limites du jour (1 bonus, 1 malus) et les LP ne changent pas.</p>
+                    <p className="text-xs text-zinc-400 mb-4">Remet le solde de points à 0 (tous les joueurs ou un seul). Les parties et achats passés ne comptent plus ; les limites d'achat et les LP ne changent pas.</p>
                     <div className="flex flex-col sm:flex-row gap-2">
                         <select value={who} onChange={e => setWho(e.target.value)} className="flex-1 bg-zinc-950 border border-zinc-700/70 rounded-xl px-3 py-2 text-sm text-zinc-200">
                             <option value="all">Tous les joueurs</option>
@@ -1624,6 +1724,7 @@
                     </div>
 
                     <PricesEditor config={config} onUpdateConfig={onUpdateConfig} />
+                    <LimitsEditor config={config} players={players} onUpdateConfig={onUpdateConfig} />
                     <DoubleValidator items={pendingDoubles || []} onSetMatchLp={onSetMatchLp} />
 
                     <ShopReset players={players} onResetShop={onResetShop} />
@@ -1727,24 +1828,36 @@
                 // Annulation d'un achat (admin) : supprime l'achat ET son marqueur « 1 bonus / 1 malus par jour »
                 // -> points remboursés, effet supprimé, le joueur peut racheter ; un ban/coup de LP redevient disponible
                 cancelPurchase: async (x, label) => {
-                    const b = writeBatch(db);
-                    b.delete(doc(db, 'history', x.id));
-                    if (!x.test) b.delete(doc(db, 'history', limitDocId(x))); // un achat de test n'a pas de marqueur
-                    await b.commit();
+                    const day = x.day || parisDay(x.createdAt);
+                    if (x.test) await deleteDoc(doc(db, 'history', x.id)); // un achat de test n'a aucun compteur
+                    else await runTransaction(db, async tx => {
+                        const refs = [
+                            doc(db, 'history', limitDocId(x)),
+                            doc(db, 'history', `lcount_${x.buyerId}_${day}_${x.kind}`),
+                            doc(db, 'history', `ltotal_${x.buyerId}_${x.kind}`)
+                        ];
+                        const snaps = [];
+                        for (const r of refs) snaps.push(await tx.get(r));
+                        snaps.forEach((sn, k) => {
+                            if (!sn.exists()) return;
+                            const c = (sn.data().count ?? 1) - 1;
+                            if (c <= 0) tx.delete(refs[k]); else tx.update(refs[k], { count: c });
+                        });
+                        tx.delete(doc(db, 'history', x.id));
+                    });
                     notifyDiscord({ kind: 'cancel', buyerName: x.buyerName, label, price: x.price || 0, test: !!x.test });
                 },
-                // Achat unique, vérifié dans une transaction :
-                //  - 1 bonus et 1 malus par jour et par joueur (document « limit »)
+                // Achat unique, vérifié dans une transaction (limites modifiables dans l'Admin, par défaut ou par joueur) :
+                //  - bonus / malus par jour, nombre d'achats par objet (par jour et sur tout le challenge) : des compteurs « limit »
                 //  - un même champion ne se banne qu'une fois par jour pour un joueur
-                //  - le coup de pouce / sabotage de LP ne s'achète qu'une fois dans tout le challenge
                 buyItem: async ({ buyer, kind, mode, target, champ, price, test }) => {
                     const now = Date.now();
                     const day = parisDay(now);
                     const category = categoryOf(kind, mode);
                     const limitRef = doc(db, 'history', limitDocId({ buyerId: buyer.id, day, category }));
-                    const purchaseRef = test ? doc(collection(db, 'history')) : kind === 'ban' ? doc(db, 'history', `ban_${target.id}_${champ.id}_${day}`)
-                        : kind === 'lpmove' ? doc(db, 'history', `lpmove_${buyer.id}`)
-                        : doc(collection(db, 'history'));
+                    const kdRef = doc(db, 'history', `lcount_${buyer.id}_${day}_${kind}`);
+                    const ktRef = doc(db, 'history', `ltotal_${buyer.id}_${kind}`);
+                    const purchaseRef = (test || kind !== 'ban') ? doc(collection(db, 'history')) : doc(db, 'history', `ban_${target.id}_${champ.id}_${day}`);
                     const data = { type: 'purchase', kind, buyerId: buyer.id, buyerName: buyer.playerName, price, category, day, createdAt: serverTimestamp(), timestamp: now };
                     if (mode) data.mode = mode;
                     if (test) data.test = true;
@@ -1752,20 +1865,27 @@
                     if (champ) { data.championKey = champ.id; data.championName = champ.name; }
 
                     if (test) {
-                        // Mode test : aucune limite (ni jour, ni unicité) et aucun marqueur, donc rien n'est consommé pour de vrai
+                        // Mode test : aucune limite et aucun compteur, donc rien n'est consommé pour de vrai
                         await setDoc(purchaseRef, data);
-                    } else await runTransaction(db, async tx => {
-                        const limitSnap = await tx.get(limitRef);
-                        const purchaseSnap = await tx.get(purchaseRef);
-                        if (limitSnap.exists()) throw new Error(`Tu as déjà acheté ton ${category} aujourd'hui (1 ${category} par jour).`);
-                        if (purchaseSnap.exists()) {
-                            throw new Error(kind === 'ban'
-                                ? `${champ.name} est déjà banni aujourd'hui pour ${target.playerName}.`
-                                : `Tu as déjà utilisé ton coup de ${LPMOVE_LP} LP (une seule fois dans tout le challenge).`);
-                        }
-                        tx.set(limitRef, { type: 'limit', buyerId: buyer.id, day, category, timestamp: now });
-                        tx.set(purchaseRef, data);
-                    });
+                    } else {
+                        const lim = effLimits(config, buyer.id);
+                        const known = countsFor(purchases, buyer.id, day);
+                        await runTransaction(db, async tx => {
+                            const [catSnap, kdSnap, ktSnap, purchaseSnap] = [await tx.get(limitRef), await tx.get(kdRef), await tx.get(ktRef), await tx.get(purchaseRef)];
+                            const val = (sn, k) => Math.max(sn.exists() ? (sn.data().count ?? 1) : 0, k || 0);
+                            const catN = val(catSnap, known.cat[category]), kdN = val(kdSnap, known.kd[kind]), ktN = val(ktSnap, known.kt[kind]);
+                            const over = (max, n) => max !== null && max !== undefined && n >= max;
+                            if (over(lim.cat(category), catN)) throw new Error(`Tu as atteint ta limite de ${lim.cat(category)} ${category}${lim.cat(category) > 1 ? 's' : ''} par jour.`);
+                            if (over(lim.kind(kind, 'day'), kdN)) throw new Error(`Limite atteinte : ${lim.kind(kind, 'day')} achat(s) de cet objet par jour.`);
+                            if (over(lim.kind(kind, 'total'), ktN)) throw new Error(`Limite atteinte : ${lim.kind(kind, 'total')} achat(s) de cet objet dans tout le challenge.`);
+                            if (purchaseSnap.exists()) throw new Error(`${champ.name} est déjà banni aujourd'hui pour ${target.playerName}.`);
+                            const base = { type: 'limit', buyerId: buyer.id, day, timestamp: now };
+                            tx.set(limitRef, { ...base, category, count: catN + 1 });
+                            tx.set(kdRef, { ...base, kind, count: kdN + 1 });
+                            tx.set(ktRef, { ...base, kind, count: ktN + 1 });
+                            tx.set(purchaseRef, data);
+                        });
+                    }
                     notifyDiscord({ kind, mode, buyerName: buyer.playerName, targetName: target?.playerName, championName: champ?.name, price, test: !!test });
                 }
             };
@@ -1871,7 +1991,7 @@
                         {tab === 'classement' && <Leaderboard players={playersView} isAdmin={isAdmin} onRequestDelete={setToDelete} onRequestEdit={setToEdit} />}
                         {tab === 'joueurs' && <PlayersList players={playersView} />}
                         {tab === 'historique' && <HistoryView history={history} players={playersView} purchases={purchases} statuses={allStatuses} />}
-                        {tab === 'boutique' && <ShopView players={playersView} matches={matchList} purchases={purchases} effects={effects} prices={prices} onBuy={crud.buyItem} isAdmin={isAdmin} testMode={testMode} onCancel={crud.cancelPurchase} />}
+                        {tab === 'boutique' && <ShopView players={playersView} matches={matchList} purchases={purchases} effects={effects} prices={prices} config={config} onBuy={crud.buyItem} isAdmin={isAdmin} testMode={testMode} onCancel={crud.cancelPurchase} />}
                         {tab === 'reglement' && <RulesView config={config} />}
                         {isAdmin && (
                           <div className={tab === 'admin' ? '' : 'hidden'}>
