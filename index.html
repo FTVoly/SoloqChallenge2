@@ -1551,49 +1551,162 @@
             );
         };
 
-        // ---------- Overlay pour OBS : /?overlay=1 (&view=teams | top | feed pour n'afficher qu'un bloc) ----------
-        const Overlay = ({ players, purchases, view }) => {
+        // ---------- Overlay pour OBS / Streamlabs : /?overlay=1 (&view=teams|top|feed|duels|alerts|ticker, &n=5, &scale=1.5) ----------
+        const overlayText = (x) => ({
+            ban: <><b>{x.buyerName}</b> bannit <b>{x.championName}</b> pour <b>{x.targetName}</b></>,
+            shield: <><b>{x.buyerName}</b> achète un bouclier</>,
+            double: <><b>{x.buyerName}</b> joue quitte ou double</>,
+            spells: <><b>{x.buyerName}</b> inverse les summoners de <b>{x.targetName}</b></>,
+            jackpot: <><b>{x.buyerName}</b> s'offre le BONUS ULTIME</>,
+            lpmove: x.mode === 'gain' ? <><b>{x.buyerName}</b> s'offre +{LPMOVE_LP} LP</> : <><b>{x.buyerName}</b> retire {LPMOVE_LP} LP à <b>{x.targetName}</b></>
+        }[x.kind] || <><b>{x.buyerName}</b> fait un achat</>);
+        const overlayEmoji = (x) => ({ ban: '🚫', shield: '🛡️', double: '🎲', spells: '🔄', jackpot: '👑', lpmove: x.mode === 'gain' ? '⚡' : '💥' }[x.kind] || '🛒');
+
+        const Overlay = ({ players, purchases, duels, view, n, scale }) => {
             useEffect(() => {
                 document.documentElement.style.background = 'transparent';
                 document.body.style.background = 'transparent';
+                document.body.style.overflow = 'hidden';
             }, []);
             const sorted = [...players].sort((a, b) => (b.lpDelta || 0) - (a.lpDelta || 0));
             const tot = { rouge: 0, bleu: 0 };
             players.forEach(p => { if (tot[p.team] !== undefined) tot[p.team] += Number(p.lpDelta) || 0; });
-            const feed = [...purchases].filter(x => !x.test).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 4);
+            const real = purchases.filter(x => !x.test).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
             const show = (k) => !view || view === k;
-            const card = 'rounded-2xl bg-zinc-950/85 border border-zinc-700/60 text-white p-4 backdrop-blur-sm';
+            const count = Math.max(1, Math.min(10, Number(n) || 5));
+            const card = 'rounded-2xl bg-zinc-950/85 border border-zinc-700/60 text-white p-4';
+            const colorOf = (t) => t === 'rouge' ? 'text-red-400' : t === 'bleu' ? 'text-blue-400' : 'text-zinc-300';
+
+            // Alertes : une bannière apparaît 8 s à chaque nouvel achat (les achats déjà là au chargement sont ignorés)
+            const seen = useRef(new Set());
+            const mountedAt = useRef(Date.now());
+            const [toasts, setToasts] = useState([]);
+            useEffect(() => {
+                const fresh = real.filter(x => !seen.current.has(x.id));
+                fresh.forEach(x => seen.current.add(x.id));
+                if (view !== 'alerts' || Date.now() - mountedAt.current < 4000 || !fresh.length) return;
+                setToasts(t => [...t, ...fresh.map(x => ({ key: x.id, x }))]);
+                fresh.forEach(x => setTimeout(() => setToasts(t => t.filter(y => y.key !== x.id)), 8000));
+            }, [purchases]);
+
+            const by = Object.fromEntries(players.map(p => [p.id, p]));
+            const openDuels = (duels || []).filter(d => !d.closed && by[d.a] && by[d.b]).slice(0, 4);
+
+            const ticker = (
+                <div className="flex items-center gap-10 px-6 whitespace-nowrap text-lg">
+                    <span className="text-red-400 font-heading font-bold">ROUGE <span className="text-white">{formatLP(tot.rouge)} LP</span></span>
+                    <span className="text-blue-400 font-heading font-bold">BLEU <span className="text-white">{formatLP(tot.bleu)} LP</span></span>
+                    {sorted.slice(0, 5).map((p, i) => <span key={p.id} className="text-zinc-300"><span className="text-zinc-500 mr-1">{i + 1}.</span><b className={colorOf(p.team)}>{p.playerName}</b> <span className="text-white font-heading font-bold">{formatLP(p.lpDelta)}</span></span>)}
+                    {real[0] && <span className="text-amber-300">{overlayEmoji(real[0])} {overlayText(real[0])}</span>}
+                </div>
+            );
+
             return (
-                <div className="p-4 space-y-3 w-[360px] font-body">
-                    {show('teams') && (
-                        <div className={card + ' flex items-center justify-between gap-3'}>
-                            {['rouge', 'bleu'].map(k => (
-                                <div key={k} className={`flex-1 text-center ${TEAMS[k].text}`}>
-                                    <div className="text-xs font-heading font-bold uppercase tracking-wider">{TEAMS[k].short}</div>
-                                    <div className="font-heading font-black text-3xl text-white">{formatLP(tot[k])}<span className="text-xs text-zinc-400"> LP</span></div>
+                <div style={{ zoom: Number(scale) || 1 }}>
+                    <style>{`
+                        @keyframes ovMarquee { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+                        @keyframes ovIn { from { transform: translateY(-20px) scale(.96); opacity: 0; } to { transform: none; opacity: 1; } }
+                    `}</style>
+
+                    {view === 'ticker' ? (
+                        <div className="fixed bottom-0 left-0 right-0 overflow-hidden bg-zinc-950/85 border-t border-zinc-700/60 py-3 text-white">
+                            <div className="flex w-max" style={{ animation: 'ovMarquee 40s linear infinite' }}>{ticker}{ticker}</div>
+                        </div>
+                    ) : view === 'alerts' ? (
+                        <div className="p-4 w-[480px] space-y-2">
+                            {toasts.map(t => (
+                                <div key={t.key} className="rounded-2xl bg-zinc-950/90 border border-amber-400/50 text-white px-4 py-3 flex items-center gap-3 shadow-lg" style={{ animation: 'ovIn .35s ease-out' }}>
+                                    <span className="text-3xl">{overlayEmoji(t.x)}</span>
+                                    <div className="text-base leading-snug">{overlayText(t.x)}</div>
                                 </div>
                             ))}
                         </div>
-                    )}
-                    {show('top') && (
-                        <div className={card}>
-                            <div className="text-xs font-heading font-bold uppercase tracking-wider text-zinc-400 mb-2">Classement</div>
-                            {sorted.slice(0, 5).map((p, i) => (
-                                <div key={p.id} className="flex items-center gap-2 py-1">
-                                    <span className="w-5 text-center font-heading font-bold text-zinc-500">{i + 1}</span>
-                                    <img src={p.profileImg || DEFAULT_ICON} alt="" className="w-6 h-6 rounded-full object-cover" />
-                                    <span className="flex-1 truncate font-semibold text-sm">{p.playerName}</span>
-                                    <span className={`font-heading font-bold text-sm ${p.team === 'rouge' ? 'text-red-400' : p.team === 'bleu' ? 'text-blue-400' : 'text-zinc-300'}`}>{formatLP(p.lpDelta)}</span>
+                    ) : (
+                        <div className="p-4 space-y-3 w-[420px]">
+                            {show('teams') && (
+                                <div className={card}>
+                                    <div className="flex items-center justify-between gap-3">
+                                        {['rouge', 'bleu'].map(k => (
+                                            <div key={k} className={`flex-1 text-center ${TEAMS[k].text}`}>
+                                                <div className="text-xs font-heading font-bold uppercase tracking-wider">{TEAMS[k].label}</div>
+                                                <div className="font-heading font-black text-4xl text-white">{formatLP(tot[k])}<span className="text-xs text-zinc-400"> LP</span></div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                    <div className="mt-3 h-2 rounded-full overflow-hidden bg-zinc-800 flex">
+                                        <div className="bg-red-500" style={{ width: `${Math.min(95, Math.max(5, 50 + ((tot.rouge - tot.bleu) / (2 * Math.max(Math.abs(tot.rouge), Math.abs(tot.bleu), 1))) * 50))}%` }}></div>
+                                        <div className="bg-blue-500 flex-1"></div>
+                                    </div>
                                 </div>
-                            ))}
+                            )}
+                            {show('top') && (
+                                <div className={card}>
+                                    <div className="text-xs font-heading font-bold uppercase tracking-wider text-zinc-400 mb-2">Classement</div>
+                                    {sorted.slice(0, count).map((p, i) => (
+                                        <div key={p.id} className="flex items-center gap-2 py-1">
+                                            <span className="w-5 text-center font-heading font-bold text-zinc-500">{i + 1}</span>
+                                            <img src={p.profileImg || DEFAULT_ICON} alt="" className="w-7 h-7 rounded-full object-cover" />
+                                            <span className="flex-1 truncate font-semibold">{p.playerName}</span>
+                                            <span className="text-xs text-zinc-500">{(p.rankLabel || '').split(' · ')[0]}</span>
+                                            <span className={`font-heading font-bold w-12 text-right ${colorOf(p.team)}`}>{formatLP(p.lpDelta)}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                            {show('duels') && openDuels.length > 0 && (
+                                <div className={card}>
+                                    <div className="text-xs font-heading font-bold uppercase tracking-wider text-zinc-400 mb-2">Duels</div>
+                                    {openDuels.map(d => {
+                                        const la = by[d.a].lpDelta || 0, lb = by[d.b].lpDelta || 0;
+                                        return (
+                                            <div key={d.id} className="flex items-center gap-2 py-1 text-sm">
+                                                <span className={`flex-1 text-right truncate font-semibold ${la > lb ? 'text-white' : 'text-zinc-400'}`}>{by[d.a].playerName} <span className="font-heading">{formatLP(la)}</span></span>
+                                                <span className="text-zinc-600 text-xs">VS</span>
+                                                <span className={`flex-1 truncate font-semibold ${lb > la ? 'text-white' : 'text-zinc-400'}`}><span className="font-heading">{formatLP(lb)}</span> {by[d.b].playerName}</span>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            )}
+                            {show('feed') && real.length > 0 && (
+                                <div className={card}>
+                                    <div className="text-xs font-heading font-bold uppercase tracking-wider text-zinc-400 mb-2">Boutique</div>
+                                    {real.slice(0, 4).map(x => <div key={x.id} className="text-sm py-0.5 truncate">{overlayEmoji(x)} {overlayText(x)}</div>)}
+                                </div>
+                            )}
                         </div>
                     )}
-                    {show('feed') && feed.length > 0 && (
-                        <div className={card}>
-                            <div className="text-xs font-heading font-bold uppercase tracking-wider text-zinc-400 mb-2">Boutique</div>
-                            {feed.map(x => <div key={x.id} className="text-sm py-0.5 truncate"><b>{x.buyerName}</b> <span className="text-zinc-400">· {purchaseLabel(x)}</span></div>)}
-                        </div>
-                    )}
+                </div>
+            );
+        };
+
+        // Admin : liens à coller dans OBS / Streamlabs
+        const OverlayHelper = () => {
+            const base = window.location.origin;
+            const items = [
+                ['Tout en un', '?overlay=1', '420 × 700'],
+                ['Scores des équipes', '?overlay=1&view=teams', '420 × 140'],
+                ['Classement (top 5)', '?overlay=1&view=top&n=5', '420 × 330'],
+                ['Duels en cours', '?overlay=1&view=duels', '420 × 200'],
+                ['Derniers achats', '?overlay=1&view=feed', '420 × 180'],
+                ['Alertes d\'achat (bannière 8 s)', '?overlay=1&view=alerts', '480 × 250'],
+                ['Bandeau défilant en bas', '?overlay=1&view=ticker', '1920 × 1080 (plein écran)']
+            ];
+            const [copied, setCopied] = useState('');
+            const copy = async (url) => { try { await navigator.clipboard.writeText(url); setCopied(url); setTimeout(() => setCopied(''), 1500); } catch { window.prompt('Copie ce lien :', url); } };
+            return (
+                <div className="bg-zinc-900 p-6 rounded-2xl border border-zinc-800">
+                    <h3 className="font-heading text-xl font-bold text-white flex items-center gap-2 mb-1"><Twitch className="text-zinc-400" /> Overlay OBS / Streamlabs</h3>
+                    <p className="text-xs text-zinc-400 mb-4">Dans OBS ou Streamlabs : Sources › + › Navigateur (Browser Source), colle le lien et mets la taille indiquée. Le fond est transparent et ça se met à jour tout seul. Ajoute <code className="text-zinc-300">&scale=1.5</code> pour agrandir.</p>
+                    <div className="divide-y divide-zinc-800/70">
+                        {items.map(([label, q, size]) => (
+                            <div key={q} className="flex flex-wrap items-center gap-2 py-2.5">
+                                <div className="flex-1 min-w-[180px]"><div className="text-sm text-zinc-200">{label}</div><div className="text-[11px] text-zinc-500">Taille conseillée : {size}</div></div>
+                                <button onClick={() => copy(base + '/' + q)} className="px-3 py-1.5 rounded-lg text-xs font-bold bg-zinc-800 hover:bg-zinc-700 text-zinc-200">{copied === base + '/' + q ? 'Copié ✓' : 'Copier le lien'}</button>
+                                <a href={base + '/' + q} target="_blank" rel="noreferrer" className="px-3 py-1.5 rounded-lg text-xs font-bold border border-zinc-700 text-zinc-300 hover:text-white">Aperçu</a>
+                            </div>
+                        ))}
+                    </div>
                 </div>
             );
         };
@@ -1996,6 +2109,8 @@
                     <LimitsEditor config={config} players={players} onUpdateConfig={onUpdateConfig} />
                     <DoubleValidator items={pendingDoubles || []} onSetMatchLp={onSetMatchLp} />
 
+                    <OverlayHelper />
+
                     <DuelsEditor config={config} players={players} viewPlayers={viewPlayers || players} onUpdateConfig={onUpdateConfig} />
 
                     <ShopReset players={players} onResetShop={onResetShop} />
@@ -2222,7 +2337,7 @@
             }, [players]);
 
             const overlayParams = new URLSearchParams(window.location.search);
-            if (overlayParams.get('overlay')) return <Overlay players={playersView} purchases={purchases} view={overlayParams.get('view')} />;
+            if (overlayParams.get('overlay')) return <Overlay players={playersView} purchases={purchases} duels={parseDuels(config)} view={overlayParams.get('view')} n={overlayParams.get('n')} scale={overlayParams.get('scale')} />;
 
             return (
                 <div className="flex flex-col min-h-screen">
