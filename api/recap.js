@@ -43,7 +43,8 @@ export function buildRecap(players, duels) {
 export default async function handler(req, res) {
   const secret = process.env.CRON_SECRET;
   if (!secret || req.headers.authorization !== `Bearer ${secret}`) return res.status(401).json({ error: 'Non autorisé' });
-  const webhook = process.env.DISCORD_WEBHOOK_URL;
+  // Salon à part : le récap n'est jamais envoyé dans le salon de la boutique
+  const webhook = process.env.DISCORD_RECAP_WEBHOOK_URL;
   if (!webhook) return res.status(200).json({ skipped: true });
 
   try {
