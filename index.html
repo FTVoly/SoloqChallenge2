@@ -46,7 +46,7 @@
     <div id="root"></div>
 
     <script type="text/babel" data-type="module">
-        import React, { useState, useEffect, useMemo } from 'react';
+        import React, { useState, useEffect, useMemo, useRef } from 'react';
         import { createRoot } from 'react-dom/client';
         import { 
             Trophy, Swords, Flame, ShieldAlert, Award, Clock, Users, 
@@ -828,6 +828,30 @@
         // Bonus = pour soi · Malus = sur un adversaire (1 de chaque par jour et par joueur)
         const categoryOf = (kind, mode) => kind === 'lpmove' ? (mode === 'gain' ? 'bonus' : 'malus') : (['shield', 'double'].includes(kind) ? 'bonus' : 'malus');
 
+        const VIOLATION_LP = 20; // pénalité pour un ban / des summoners inversés non respectés
+        // Joueurs qui n'ont pas respecté un malus (ban joué quand même, summoners non inversés). Les achats de test ne comptent pas.
+        const findViolations = (players, matches, purchases) => {
+            const startOf = (m) => m.gameCreation || ((m.timestamp || 0) - (m.duration || 0) * 1000);
+            const gamesOf = (playerId) => matches.filter(m => m.playerId === playerId).sort((a, b) => startOf(a) - startOf(b));
+            const nameOf = (id) => players.find(p => p.id === id)?.playerName || '?';
+            const out = [];
+            purchases.filter(x => !x.test).forEach(x => {
+                if (x.kind === 'ban') {
+                    const game = gamesOf(x.targetId).find(g => startOf(g) >= x.createdAt);
+                    if (game && (game.championName || '').toLowerCase() === (x.championKey || '').toLowerCase())
+                        out.push({ id: x.id, kind: 'ban', offenderId: x.targetId, offenderName: nameOf(x.targetId), buyerName: x.buyerName, what: game.championName, createdAt: x.createdAt });
+                } else if (x.kind === 'spells') {
+                    const ms = gamesOf(x.targetId);
+                    const idx = ms.findIndex(g => startOf(g) >= x.createdAt);
+                    if (idx < 1) return;
+                    const a = (ms[idx].spells || []).indexOf(4), b = (ms[idx - 1].spells || []).indexOf(4);
+                    if (a >= 0 && b >= 0 && a === b)
+                        out.push({ id: x.id, kind: 'spells', offenderId: x.targetId, offenderName: nameOf(x.targetId), buyerName: x.buyerName, what: 'summoners non inversés', createdAt: x.createdAt });
+                }
+            });
+            return out;
+        };
+
         // Effets sur les LP (quitte ou double, +10/-10 LP) et vérification des summoners inversés
         const computeEffects = (players, matches, purchases) => {
             const startOf = (m) => m.gameCreation || ((m.timestamp || 0) - (m.duration || 0) * 1000);
@@ -835,7 +859,7 @@
             const lpAdjust = {};
             const statuses = {};
             const resetAt = {};
-            players.forEach(pl => { lpAdjust[pl.id] = { qod: 0, moves: 0, total: 0 }; resetAt[pl.id] = pl.lpResetAt || 0; });
+            players.forEach(pl => { lpAdjust[pl.id] = { qod: 0, moves: 0, penalty: 0, total: 0 }; resetAt[pl.id] = pl.lpResetAt || 0; });
 
             // Quitte ou double : la 1re partie lancée après l'achat voit sa variation de LP comptée une 2e fois
             players.forEach(pl => {
@@ -877,7 +901,10 @@
                 statuses[sp.id] = { state: 'used', check, played, matchDocId: game.id };
             });
 
-            Object.values(lpAdjust).forEach(a => { a.total = a.qod + a.moves; });
+            findViolations(players, matches, purchases).forEach(v => {
+                if (lpAdjust[v.offenderId] && v.createdAt >= resetAt[v.offenderId]) lpAdjust[v.offenderId].penalty -= VIOLATION_LP;
+            });
+            Object.values(lpAdjust).forEach(a => { a.total = a.qod + a.moves + a.penalty; });
             return { lpAdjust, statuses };
         };
 
@@ -886,7 +913,7 @@
             if (x.kind === 'ban') {
                 if (st.state === 'pending') return { text: 'En attente de sa prochaine partie', tone: 'text-zinc-400' };
                 return st.violated
-                    ? { text: `⚠️ Non respecté : a joué ${st.played}`, tone: 'text-red-400' }
+                    ? { text: `⚠️ Non respecté : a joué ${st.played}${x.test ? '' : ` (−${VIOLATION_LP} LP)`}`, tone: 'text-red-400' }
                     : { text: `Respecté (a joué ${st.played})`, tone: 'text-emerald-400' };
             }
             if (x.kind === 'shield') {
@@ -907,7 +934,7 @@
             if (x.kind === 'spells') {
                 if (st.state === 'pending') return { text: 'En attente de sa prochaine partie', tone: 'text-zinc-400' };
                 if (st.check === 'ok') return { text: `Respecté (sorts : ${st.played})`, tone: 'text-emerald-400' };
-                if (st.check === 'ko') return { text: `⚠️ Non respecté (sorts : ${st.played})`, tone: 'text-red-400' };
+                if (st.check === 'ko') return { text: `⚠️ Non respecté (sorts : ${st.played})${x.test ? '' : ` (−${VIOLATION_LP} LP)`}`, tone: 'text-red-400' };
                 return { text: `Partie jouée (sorts : ${st.played}), à vérifier`, tone: 'text-zinc-400' };
             }
             if (x.kind === 'lpmove') return { text: `${x.mode === 'gain' ? '+' : '−'}${LPMOVE_LP} LP appliqués`, tone: x.mode === 'gain' ? 'text-emerald-400' : 'text-red-400' };
@@ -1648,6 +1675,25 @@
                 }).then(r => { if (!r.ok && retry) setTimeout(() => send(false), 2000); }).catch(() => { if (retry) setTimeout(() => send(false), 2000); });
                 try { send(true); } catch {}
             };
+
+            // Alerte Discord unique par infraction : un marqueur dans Firestore (créé en transaction) évite les doublons entre navigateurs
+            const notifiedRef = useRef(new Set());
+            useEffect(() => {
+                if (!user || !db) return;
+                findViolations(players, history.filter(h => h.type === 'match'), purchases).forEach(v => {
+                    if (notifiedRef.current.has(v.id)) return;
+                    notifiedRef.current.add(v.id);
+                    const ref = doc(db, 'history', `violation_${v.id}`);
+                    runTransaction(db, async tx => {
+                        const snap = await tx.get(ref);
+                        if (snap.exists()) return false;
+                        tx.set(ref, { type: 'violation', purchaseId: v.id, playerId: v.offenderId, timestamp: Date.now() });
+                        return true;
+                    }).then(created => {
+                        if (created) notifyDiscord({ kind: 'violation', buyerName: v.offenderName, targetName: v.buyerName, label: v.what, mode: v.kind, price: VIOLATION_LP });
+                    }).catch(() => notifiedRef.current.delete(v.id));
+                });
+            }, [user, players, history, purchases]);
 
             const crud = {
                 add: async data => addDoc(collection(db, 'players'), data),

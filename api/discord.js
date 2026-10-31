@@ -19,7 +19,7 @@ export default async function handler(req, res) {
   const kind = body.kind;
   const mode = body.mode === 'gain' ? 'gain' : 'drain';
 
-  if (!buyer || !['ban', 'shield', 'double', 'spells', 'lpmove', 'cancel'].includes(kind)) {
+  if (!buyer || !['ban', 'shield', 'double', 'spells', 'lpmove', 'cancel', 'violation'].includes(kind)) {
     return res.status(400).json({ error: 'Requête invalide' });
   }
 
@@ -27,7 +27,19 @@ export default async function handler(req, res) {
   const MALUS = 0xef4444; // rouge : malus sur un adversaire
   const label = String(body.label ?? '').slice(0, 80).replace(/[@`*_~|>\\]/g, '').trim();
   let embed;
-  if (kind === 'cancel') {
+  if (kind === 'violation') {
+    const by = clean(body.targetName);
+    const what = String(body.label ?? '').slice(0, 80).replace(/[@`*_~|>\\]/g, '').trim();
+    const lp = Math.max(0, Math.min(100, Number(body.price) || 0));
+    embed = {
+      title: '⚠️ Malus non respecté',
+      description: body.mode === 'ban'
+        ? `**${buyer}** a joué **${what}**, banni par **${by}**. Pénalité : **−${lp} LP**.`
+        : `**${buyer}** n'a pas inversé ses summoners (demandé par **${by}**). Pénalité : **−${lp} LP**.`,
+      color: MALUS,
+      footer: { text: `Pénalité · −${lp} LP · SoloQ Challenge` },
+    };
+  } else if (kind === 'cancel') {
     embed = {
       title: '↩️ Achat annulé',
       description: `L'achat de **${buyer}**${label ? ` (${label})` : ''} a été annulé par l'organisateur. Les points sont remboursés.`,
@@ -79,7 +91,7 @@ export default async function handler(req, res) {
   }
   const prefix = body.test === true ? 'TEST · ' : '';
   const isBonus = kind === 'shield' || kind === 'double' || (kind === 'lpmove' && mode === 'gain');
-  embed.footer = {
+  embed.footer = kind === 'violation' ? embed.footer : {
     text: kind === 'cancel'
       ? `${prefix}Remboursé · ${price} pts · SoloQ Challenge`
       : `${prefix}${isBonus ? 'Bonus' : 'Malus'} · ${price} pts · SoloQ Challenge`,
