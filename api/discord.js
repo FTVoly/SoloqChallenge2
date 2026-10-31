@@ -19,7 +19,7 @@ export default async function handler(req, res) {
   const kind = body.kind;
   const mode = body.mode === 'gain' ? 'gain' : 'drain';
 
-  if (!buyer || !['ban', 'shield', 'double', 'spells', 'lpmove', 'cancel', 'violation'].includes(kind)) {
+  if (!buyer || !['ban', 'shield', 'double', 'spells', 'lpmove', 'cancel', 'violation', 'jackpot'].includes(kind)) {
     return res.status(400).json({ error: 'Requête invalide' });
   }
 
@@ -76,6 +76,12 @@ export default async function handler(req, res) {
       description: `**${buyer}** s'offre **+10 LP**.`,
       color: BONUS,
     };
+  } else if (kind === 'jackpot') {
+    embed = {
+      title: '👑 BONUS ULTIME ACHETÉ',
+      description: `**${buyer}** vient d'acheter le **bonus ultime**, le seul du tournoi !\nÀ la prochaine partie de chaque joueur, il récupère **25 %** des LP perdus. Si tout le monde gagne : **+30 LP** pour lui.`,
+      color: 0xf59e0b,
+    };
   } else if (kind === 'double') {
     embed = {
       title: '🎲 Quitte ou double',
@@ -90,7 +96,7 @@ export default async function handler(req, res) {
     };
   }
   const prefix = body.test === true ? 'TEST · ' : '';
-  const isBonus = kind === 'shield' || kind === 'double' || (kind === 'lpmove' && mode === 'gain');
+  const isBonus = kind === 'shield' || kind === 'double' || kind === 'jackpot' || (kind === 'lpmove' && mode === 'gain');
   embed.footer = kind === 'violation' ? embed.footer : {
     text: kind === 'cancel'
       ? `${prefix}Remboursé · ${price} pts · SoloQ Challenge`

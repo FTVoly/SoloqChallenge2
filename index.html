@@ -52,7 +52,7 @@
             Trophy, Swords, Flame, ShieldAlert, Award, Clock, Users, 
             ExternalLink, Settings, UserPlus, Edit2, Check, X, Lock, 
             Twitch, Gamepad2, ArrowUpRight, ChevronRight, Sparkles,
-            RotateCcw, History, Shield, ShoppingBag, Ban, Coins, Dices, ArrowLeftRight, Zap, Skull, Trash2
+            RotateCcw, History, Shield, ShoppingBag, Ban, Coins, Dices, ArrowLeftRight, Zap, Skull, Trash2, Crown
         } from 'lucide-react';
         import { initializeApp } from 'firebase/app';
         import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
@@ -656,6 +656,10 @@
                 const titles = { shield: '🛡️ Bouclier', double: '🎲 Quitte ou double', ban: '🚫 Ban', spells: '🔄 Summoners inversés' };
                 purchases.forEach(x => {
                     const st = statuses[x.id];
+                    if (x.kind === 'jackpot' && st?.perGame) {
+                        Object.entries(st.perGame).forEach(([mid, text]) => (map[mid] = map[mid] || []).push({ id: `${x.id}_${mid}`, title: '👑 Bonus ultime', by: x.buyerName, test: x.test, text, tone: 'text-amber-300' }));
+                        return;
+                    }
                     if (!st || !st.matchDocId || !titles[x.kind]) return;
                     const d = describeStatus(x, st);
                     const title = x.kind === 'ban' ? `${titles.ban} ${x.championName || x.championKey || ''}`.trim() : titles[x.kind];
@@ -760,7 +764,8 @@
             shield: 'bouclier',
             double: 'quitte ou double',
             spells: `summoners inversés pour ${x.targetName}`,
-            lpmove: x.mode === 'gain' ? `+${LPMOVE_LP} LP` : `−${LPMOVE_LP} LP à ${x.targetName}`
+            lpmove: x.mode === 'gain' ? `+${LPMOVE_LP} LP` : `−${LPMOVE_LP} LP à ${x.targetName}`,
+            jackpot: 'bonus ultime'
         }[x.kind] || 'achat');
 
         // Calcule les points de chaque joueur + le statut de chaque achat, uniquement à partir des parties et des achats enregistrés
@@ -820,13 +825,14 @@
             return { byPlayer, statuses };
         };
 
-        const DEFAULT_PRICES = { shield: 10, double: 10, ban: 15, spells: 10, lpmove: 25 }; // modifiables depuis l'Admin
+        const DEFAULT_PRICES = { shield: 10, double: 10, ban: 15, spells: 10, lpmove: 25, jackpot: 1500 }; // modifiables depuis l'Admin
+        const JACKPOT_PCT = 25, JACKPOT_BONUS = 30; // bonus ultime : % des LP perdus par les autres + bonus si tout le monde gagne
         const LPMOVE_LP = 10;
         const SPELL_NAMES = { 1: 'Purification', 3: 'Épuisement', 4: 'Saut éclair', 6: 'Fantôme', 7: 'Soin', 11: 'Châtiment', 12: 'Téléportation', 13: 'Clarté', 14: 'Embrasement', 21: 'Barrière', 32: 'Boule de neige' };
 
         const parisDay = (ts) => new Date(ts).toLocaleDateString('sv-SE', { timeZone: 'Europe/Paris' });
         // Bonus = pour soi · Malus = sur un adversaire (1 de chaque par jour et par joueur)
-        const categoryOf = (kind, mode) => kind === 'lpmove' ? (mode === 'gain' ? 'bonus' : 'malus') : (['shield', 'double'].includes(kind) ? 'bonus' : 'malus');
+        const categoryOf = (kind, mode) => kind === 'lpmove' ? (mode === 'gain' ? 'bonus' : 'malus') : (['shield', 'double', 'jackpot'].includes(kind) ? 'bonus' : 'malus');
 
         const VIOLATION_LP = 20; // pénalité pour un ban / des summoners inversés non respectés
         // Joueurs qui n'ont pas respecté un malus (ban joué quand même, summoners non inversés). Les achats de test ne comptent pas.
@@ -855,7 +861,7 @@
         // ---------- Limites d'achat (modifiables dans l'Admin, par défaut ou par joueur) ----------
         // null = illimité ; sinon nombre maximum. Valeurs par défaut : 1 bonus + 1 malus par jour, ±10 LP une seule fois
         const parseJson = (s) => { try { return (s && JSON.parse(s)) || {}; } catch { return {}; } };
-        const DEFAULT_LIMITS = { catDay: { bonus: 1, malus: 1 }, kinds: { lpmove: { total: 1 } } };
+        const DEFAULT_LIMITS = { catDay: { bonus: 1, malus: 1 }, kinds: { lpmove: { total: 1 }, jackpot: { total: 1 } } };
         const firstDefined = (...v) => v.find(x => x !== undefined);
         const explicitLimits = (L) => ({
             catDay: { bonus: firstDefined(L?.catDay?.bonus, DEFAULT_LIMITS.catDay.bonus), malus: firstDefined(L?.catDay?.malus, DEFAULT_LIMITS.catDay.malus) },
@@ -889,7 +895,7 @@
             const lpAdjust = {};
             const statuses = {};
             const resetAt = {};
-            players.forEach(pl => { lpAdjust[pl.id] = { qod: 0, moves: 0, penalty: 0, total: 0 }; resetAt[pl.id] = pl.lpResetAt || 0; });
+            players.forEach(pl => { lpAdjust[pl.id] = { qod: 0, moves: 0, penalty: 0, jackpot: 0, total: 0 }; resetAt[pl.id] = pl.lpResetAt || 0; });
 
             // Quitte ou double : la 1re partie lancée après l'achat voit sa variation de LP comptée une 2e fois
             players.forEach(pl => {
@@ -916,6 +922,34 @@
                 statuses[m.id] = { state: 'applied' };
             });
 
+            // Bonus ultime : à la prochaine partie de chaque autre joueur, l'acheteur reçoit 25 % des LP perdus ;
+            // si tous les autres gagnent cette partie, il prend +30 LP
+            purchases.filter(x => x.kind === 'jackpot').forEach(j => {
+                const others = players.filter(p => p.id !== j.buyerId);
+                const perGame = {}, verify = [];
+                let gain = 0, played = 0, wins = 0;
+                others.forEach(o => {
+                    const game = gamesOf(o.id).find(g => startOf(g) >= j.createdAt);
+                    if (!game) return;
+                    played++;
+                    if (game.win) { wins++; perGame[game.id] = `${o.playerName} a gagné : rien à récupérer`; return; }
+                    if (typeof game.lpChange === 'number') {
+                        const lost = Math.max(0, -game.lpChange);
+                        const part = Math.round(lost * JACKPOT_PCT / 100);
+                        gain += part;
+                        perGame[game.id] = `${o.playerName} a perdu ${lost} LP : +${part} LP pour ${j.buyerName}`;
+                    } else {
+                        verify.push({ matchDocId: game.id, playerName: o.playerName });
+                        perGame[game.id] = `${o.playerName} a perdu : LP à valider par l'organisateur`;
+                    }
+                });
+                const everyone = others.length > 0 && played === others.length;
+                const bonus = everyone && wins === others.length;
+                const total = gain + (bonus ? JACKPOT_BONUS : 0);
+                if (!j.test && lpAdjust[j.buyerId] && j.createdAt >= resetAt[j.buyerId]) lpAdjust[j.buyerId].jackpot += total;
+                statuses[j.id] = { state: everyone ? (verify.length ? 'toverify' : 'done') : 'pending', played, expected: others.length, gain, bonus, total, perGame, verify };
+            });
+
             // Summoners inversés : on compare avec la partie précédente (Saut éclair passé de D à F ou inversement)
             purchases.filter(x => x.kind === 'spells').forEach(sp => {
                 const ms = gamesOf(sp.targetId);
@@ -934,7 +968,7 @@
             findViolations(players, matches, purchases).forEach(v => {
                 if (lpAdjust[v.offenderId] && v.createdAt >= resetAt[v.offenderId]) lpAdjust[v.offenderId].penalty -= VIOLATION_LP;
             });
-            Object.values(lpAdjust).forEach(a => { a.total = a.qod + a.moves + a.penalty; });
+            Object.values(lpAdjust).forEach(a => { a.total = a.qod + a.moves + a.penalty + a.jackpot; });
             return { lpAdjust, statuses };
         };
 
@@ -966,6 +1000,12 @@
                 if (st.check === 'ok') return { text: `Respecté (sorts : ${st.played})`, tone: 'text-emerald-400' };
                 if (st.check === 'ko') return { text: `⚠️ Non respecté (sorts : ${st.played})${x.test ? '' : ` (−${VIOLATION_LP} LP)`}`, tone: 'text-red-400' };
                 return { text: `Partie jouée (sorts : ${st.played}), à vérifier`, tone: 'text-zinc-400' };
+            }
+            if (x.kind === 'jackpot') {
+                const base = `${st.played}/${st.expected} joueurs ont joué`;
+                if (st.state === 'pending') return { text: `En cours : ${base} · déjà +${st.total} LP`, tone: 'text-amber-400' };
+                if (st.state === 'toverify') return { text: `${base} · LP à valider par l'organisateur (+${st.total} LP pour l'instant)`, tone: 'text-amber-400' };
+                return { text: `Terminé : +${st.gain} LP récupérés${st.bonus ? ` et +${JACKPOT_BONUS} LP (tout le monde a gagné)` : ''} = +${st.total} LP`, tone: 'text-emerald-400' };
             }
             if (x.kind === 'lpmove') return { text: `${x.mode === 'gain' ? '+' : '−'}${LPMOVE_LP} LP appliqués`, tone: x.mode === 'gain' ? 'text-emerald-400' : 'text-red-400' };
             return null;
@@ -1018,6 +1058,8 @@
             const kindFull = (k) => !free && !!buyer && (reached(lim.kind(k, 'day'), cnt.kd[k] || 0) || reached(lim.kind(k, 'total'), cnt.kt[k] || 0));
             const bonusUsed = slotUsed('bonus'), malusUsed = slotUsed('malus');
             const lpmoveUsed = kindFull('lpmove');
+            const jackpotBuy = purchases.find(x => x.kind === 'jackpot' && !x.test);
+            const jackpotTaken = !free && !!jackpotBuy, jackpotOwner = jackpotBuy?.buyerName;
             const fmtLim = (v) => (v === null || v === undefined) ? '∞' : v;
             const bannedToday = useMemo(() => new Set(free ? [] : purchases.filter(x => !x.test && x.kind === 'ban' && x.targetId === targetId && parisDay(x.createdAt) === today).map(x => x.championKey)), [purchases, targetId, today, free]);
             const visibleChamps = champs.filter(c => c.name.toLowerCase().includes(search.toLowerCase()));
@@ -1044,6 +1086,7 @@
                     double: 'Jouer quitte ou double sur ta prochaine partie',
                     ban: `Bannir ${champ?.name} pour ${target?.playerName}`,
                     spells: `Inverser les summoners de ${target?.playerName}`,
+                    jackpot: `Acheter le BONUS ULTIME (un seul joueur du tournoi peut l'avoir)`,
                     lpmove: mode === 'gain' ? `Gagner ${LPMOVE_LP} LP ` : `Faire perdre ${LPMOVE_LP} LP à ${target?.playerName}`
                 }[kind];
                 if (!window.confirm(`${label} ? (${free ? 'mode test : gratuit' : price + ' points'})`)) return;
@@ -1071,12 +1114,13 @@
                 if (x.kind === 'shield') return <><b>{x.buyerName}</b> a acheté un bouclier</>;
                 if (x.kind === 'double') return <><b>{x.buyerName}</b> joue quitte ou double</>;
                 if (x.kind === 'spells') return <><b>{x.buyerName}</b> inverse les summoners de <b>{x.targetName}</b></>;
+                if (x.kind === 'jackpot') return <><b>{x.buyerName}</b> a acheté le <b>Bonus ultime</b> 👑</>;
                 if (x.kind === 'lpmove') return x.mode === 'gain' ? <><b>{x.buyerName}</b> s'offre +{LPMOVE_LP} LP</> : <><b>{x.buyerName}</b> fait perdre {LPMOVE_LP} LP à <b>{x.targetName}</b></>;
                 return null;
             };
             const feedIcon = (x) => {
                 if (x.kind === 'ban') return <img src={`https://ddragon.leagueoflegends.com/cdn/${version}/img/champion/${x.championKey}.png`} alt="" className="w-9 h-9 rounded-lg border border-zinc-700" onError={e => { e.currentTarget.style.visibility = 'hidden'; }} />;
-                const Icon = { shield: Shield, double: Dices, spells: ArrowLeftRight, lpmove: x.mode === 'gain' ? Zap : Skull }[x.kind] || ShoppingBag;
+                const Icon = { shield: Shield, double: Dices, spells: ArrowLeftRight, jackpot: Crown, lpmove: x.mode === 'gain' ? Zap : Skull }[x.kind] || ShoppingBag;
                 const color = categoryOf(x.kind, x.mode) === 'bonus' ? 'text-blue-400' : 'text-red-400';
                 return <div className="w-9 h-9 rounded-lg border border-zinc-700 bg-zinc-900 flex items-center justify-center"><Icon size={16} className={color} /></div>;
             };
@@ -1139,6 +1183,8 @@
                                     desc={<>À acheter <b className="text-zinc-200">avant de lancer ta partie</b>. Si tu perds, les points perdus (morts) ne sont pas comptés. Si tu gagnes, il disparaît sans effet.</>} />
                                 <ItemCard icon={<Dices size={16} className="text-blue-400" />} title="Quitte ou double" price={prices.double} busy={busy} disabled={bonusUsed || kindFull('double')} btnLabel="Jouer quitte ou double" onBuy={() => buy('double')}
                                     desc={<>À acheter <b className="text-zinc-200">avant ta partie</b>. Victoire : tu gagnes 2× les LP. Défaite : tu perds 2× les LP.</>} />
+                                <ItemCard icon={<Crown size={16} className="text-amber-400" />} title="Bonus ultime" price={prices.jackpot} busy={busy} disabled={bonusUsed || kindFull('jackpot') || jackpotTaken} btnLabel={jackpotTaken ? `Déjà acheté par ${jackpotOwner}` : 'Acheter le bonus ultime'} onBuy={() => buy('jackpot')}
+                                    desc={<><b className="text-zinc-200">Un seul joueur dans tout le tournoi.</b> À la partie suivante de chaque autre joueur, tu récupères <b className="text-zinc-200">{JACKPOT_PCT} % des LP qu'il perd</b>. Si tous les autres gagnent, tu prends <b className="text-zinc-200">+{JACKPOT_BONUS} LP</b>.</>} />
                                 <ItemCard icon={<Zap size={16} className="text-blue-400" />} title={`Coup de pouce +${LPMOVE_LP} LP`} price={prices.lpmove} busy={busy} disabled={bonusUsed || lpmoveUsed} btnLabel={lpmoveUsed ? 'Limite atteinte' : `Gagner ${LPMOVE_LP} LP`} onBuy={() => buy('lpmove', 'gain')}
                                     desc={<>Tu gagnes {LPMOVE_LP} LP directement. <b className="text-zinc-200">Une seule fois dans tout le challenge</b> (au choix avec le sabotage).</>} />
                             </div>
@@ -1342,7 +1388,7 @@
             const [vals, setVals] = useState(fromConfig);
             const [saved, setSaved] = useState(false);
             useEffect(() => { setVals(fromConfig()); }, [config]);
-            const labels = { shield: 'Bouclier', double: 'Quitte ou double', ban: 'Bannir un champion', spells: 'Summoners inversés', lpmove: '±10 LP' };
+            const labels = { shield: 'Bouclier', double: 'Quitte ou double', ban: 'Bannir un champion', spells: 'Summoners inversés', lpmove: '±10 LP', jackpot: 'Bonus ultime' };
             const save = async () => {
                 const prices = Object.fromEntries(Object.keys(DEFAULT_PRICES).map(k => [k, Math.max(0, Math.round(Number(vals[k]) || 0))]));
                 await onUpdateConfig({ prices });
@@ -1353,7 +1399,7 @@
                 <div className="bg-zinc-900 p-6 rounded-2xl border border-zinc-800">
                     <h3 className="font-heading text-xl font-bold text-white flex items-center gap-2 mb-1"><Coins className="text-zinc-400" /> Prix de la boutique</h3>
                     <p className="text-xs text-zinc-400 mb-4">En points. Le nouveau prix s'applique aux prochains achats.</p>
-                    <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
+                    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-4">
                         {Object.keys(DEFAULT_PRICES).map(k => (
                             <label key={k} className="block text-xs text-zinc-400">{labels[k]}
                                 <input type="number" min="0" value={vals[k]} onChange={e => setVals({ ...vals, [k]: e.target.value })} className="mt-1 w-full bg-zinc-950 border border-zinc-700 rounded-xl px-3 py-2 text-sm text-white" />
@@ -1383,7 +1429,7 @@
             const [pid, setPid] = useState('');
             const [saved, setSaved] = useState(false);
             useEffect(() => { setBase(explicitLimits(parseJson(config?.limitsJson))); setPer(parseJson(config?.playerLimitsJson)); }, [config]);
-            const names = { shield: 'Bouclier', double: 'Quitte ou double', ban: 'Bannir un champion', spells: 'Summoners inversés', lpmove: '±10 LP (coup de pouce / sabotage)' };
+            const names = { shield: 'Bouclier', double: 'Quitte ou double', ban: 'Bannir un champion', spells: 'Summoners inversés', lpmove: '±10 LP (coup de pouce / sabotage)', jackpot: 'Bonus ultime (1 seul joueur du tournoi)' };
             const rows = [{ cat: 'bonus', label: 'Bonus au total par jour' }, { cat: 'malus', label: 'Malus au total par jour' }, ...Object.keys(DEFAULT_PRICES).map(k => ({ kind: k, label: names[k] }))];
             const get = (L, r, f) => r.cat ? L.catDay?.[r.cat] : L.kinds?.[r.kind]?.[f];
             const set = (L, r, f, v) => r.cat ? { ...L, catDay: { ...L.catDay, [r.cat]: v } } : { ...L, kinds: { ...L.kinds, [r.kind]: { ...L.kinds?.[r.kind], [f]: v } } };
@@ -1857,7 +1903,7 @@
                     const limitRef = doc(db, 'history', limitDocId({ buyerId: buyer.id, day, category }));
                     const kdRef = doc(db, 'history', `lcount_${buyer.id}_${day}_${kind}`);
                     const ktRef = doc(db, 'history', `ltotal_${buyer.id}_${kind}`);
-                    const purchaseRef = (test || kind !== 'ban') ? doc(collection(db, 'history')) : doc(db, 'history', `ban_${target.id}_${champ.id}_${day}`);
+                    const purchaseRef = test ? doc(collection(db, 'history')) : kind === 'ban' ? doc(db, 'history', `ban_${target.id}_${champ.id}_${day}`) : kind === 'jackpot' ? doc(db, 'history', 'jackpot_global') : doc(collection(db, 'history'));
                     const data = { type: 'purchase', kind, buyerId: buyer.id, buyerName: buyer.playerName, price, category, day, createdAt: serverTimestamp(), timestamp: now };
                     if (mode) data.mode = mode;
                     if (test) data.test = true;
@@ -1878,7 +1924,7 @@
                             if (over(lim.cat(category), catN)) throw new Error(`Tu as atteint ta limite de ${lim.cat(category)} ${category}${lim.cat(category) > 1 ? 's' : ''} par jour.`);
                             if (over(lim.kind(kind, 'day'), kdN)) throw new Error(`Limite atteinte : ${lim.kind(kind, 'day')} achat(s) de cet objet par jour.`);
                             if (over(lim.kind(kind, 'total'), ktN)) throw new Error(`Limite atteinte : ${lim.kind(kind, 'total')} achat(s) de cet objet dans tout le challenge.`);
-                            if (purchaseSnap.exists()) throw new Error(`${champ.name} est déjà banni aujourd'hui pour ${target.playerName}.`);
+                            if (purchaseSnap.exists()) throw new Error(kind === 'jackpot' ? 'Le bonus ultime a déjà été acheté : un seul joueur du tournoi peut l\'avoir.' : `${champ.name} est déjà banni aujourd'hui pour ${target.playerName}.`);
                             const base = { type: 'limit', buyerId: buyer.id, day, timestamp: now };
                             tx.set(limitRef, { ...base, category, count: catN + 1 });
                             tx.set(kdRef, { ...base, kind, count: kdN + 1 });
@@ -1941,7 +1987,8 @@
             const prices = useMemo(() => ({ ...DEFAULT_PRICES, ...(config?.prices || {}) }), [config]);
             const pendingDoubles = useMemo(() => purchases
                 .filter(x => x.kind === 'double' && effects.statuses[x.id]?.state === 'toverify')
-                .map(x => ({ ...x, matchDocId: effects.statuses[x.id].matchDocId, win: effects.statuses[x.id].win })), [purchases, effects]);
+                .map(x => ({ ...x, matchDocId: effects.statuses[x.id].matchDocId, win: effects.statuses[x.id].win }))
+                .concat(purchases.filter(x => x.kind === 'jackpot').flatMap(x => (effects.statuses[x.id]?.verify || []).map(v => ({ id: `${x.id}_${v.matchDocId}`, buyerName: `Bonus ultime de ${x.buyerName} · partie de ${v.playerName}`, matchDocId: v.matchDocId, win: false })))), [purchases, effects]);
 
             const stats = useMemo(() => {
                 const totalGames = players.reduce((acc, p) => acc + (p.wins || 0) + (p.losses || 0), 0);
