@@ -871,7 +871,7 @@
                     used[game.matchId] = true;
                     if (typeof game.lpChange === 'number') {
                         statuses[d.id] = { state: 'applied', win: !!game.win, lp: game.lpChange, matchDocId: game.id };
-                        if (d.createdAt >= resetAt[pl.id]) lpAdjust[pl.id].qod += game.lpChange;
+                        if (!d.test && d.createdAt >= resetAt[pl.id]) lpAdjust[pl.id].qod += game.lpChange;
                     } else {
                         statuses[d.id] = { state: 'toverify', win: !!game.win, matchDocId: game.id };
                     }
@@ -882,7 +882,7 @@
             purchases.filter(x => x.kind === 'lpmove').forEach(m => {
                 const affected = m.mode === 'gain' ? m.buyerId : m.targetId;
                 const delta = m.mode === 'gain' ? LPMOVE_LP : -LPMOVE_LP;
-                if (lpAdjust[affected] && m.createdAt >= resetAt[affected]) lpAdjust[affected].moves += delta;
+                if (!m.test && lpAdjust[affected] && m.createdAt >= resetAt[affected]) lpAdjust[affected].moves += delta;
                 statuses[m.id] = { state: 'applied' };
             });
 
@@ -981,10 +981,10 @@
             const target = players.find(p => p.id === targetId);
             const balance = buyer ? (byPlayer[buyer.id]?.balance ?? 0) : 0;
             const today = parisDay(Date.now());
-            const slotUsed = (cat) => !!buyer && purchases.some(x => x.buyerId === buyer.id && categoryOf(x.kind, x.mode) === cat && parisDay(x.createdAt) === today);
+            const slotUsed = (cat) => !free && !!buyer && purchases.some(x => !x.test && x.buyerId === buyer.id && categoryOf(x.kind, x.mode) === cat && parisDay(x.createdAt) === today);
             const bonusUsed = slotUsed('bonus'), malusUsed = slotUsed('malus');
-            const lpmoveUsed = !!buyer && purchases.some(x => x.kind === 'lpmove' && x.buyerId === buyer.id);
-            const bannedToday = useMemo(() => new Set(purchases.filter(x => x.kind === 'ban' && x.targetId === targetId && parisDay(x.createdAt) === today).map(x => x.championKey)), [purchases, targetId, today]);
+            const lpmoveUsed = !free && !!buyer && purchases.some(x => !x.test && x.kind === 'lpmove' && x.buyerId === buyer.id);
+            const bannedToday = useMemo(() => new Set(free ? [] : purchases.filter(x => !x.test && x.kind === 'ban' && x.targetId === targetId && parisDay(x.createdAt) === today).map(x => x.championKey)), [purchases, targetId, today, free]);
             const visibleChamps = champs.filter(c => c.name.toLowerCase().includes(search.toLowerCase()));
 
             const chooseBuyer = (id) => {
@@ -1079,7 +1079,7 @@
 
                     {/* Achats */}
                     <div className="bg-zinc-900 rounded-2xl border border-zinc-800 p-6 space-y-6">
-                        {free && <div className="text-xs rounded-xl px-4 py-2.5 border border-amber-500/40 bg-amber-500/10 text-amber-200">Mode test activé : points infinis, achats gratuits (marqués « TEST »). Les effets sont bien appliqués : annule les achats de test avec la corbeille dans « Derniers achats ».</div>}
+                        {free && <div className="text-xs rounded-xl px-4 py-2.5 border border-amber-500/40 bg-amber-500/10 text-amber-200">Mode test activé : points infinis, achats gratuits et sans limite (marqués « TEST »). Les achats de test n'utilisent ni tes limites du jour ni les vrais bans, et ne modifient jamais les LP, ni de pénalité. Supprime-les avec la corbeille dans « Derniers achats ».</div>}
                         <div className="flex flex-col sm:flex-row sm:items-end gap-3 justify-between">
                             <label className="block text-xs text-zinc-400 flex-1 max-w-xs">Acheter en tant que
                                 <select value={buyerId} onChange={e => chooseBuyer(e.target.value)} className="mt-1 w-full bg-zinc-950 border border-zinc-700 rounded-xl px-3 py-2.5 text-sm text-white">
@@ -1398,8 +1398,11 @@
                 throw new Error('Limite de requêtes Riot atteinte, réessaie dans 2 minutes');
             };
 
+            const syncingRef = useRef(false);
             const handleSync = async () => {
                 if (!apiKey.trim()) return setStatus("❌ Clé API Riot requise.");
+                if (syncingRef.current) return;
+                syncingRef.current = true;
                 setLoading(true);
                 setStatus("⏳ Synchronisation des invocateurs via le proxy Vercel...");
                 let success = 0, newGames = 0, errors = [];
@@ -1496,9 +1499,22 @@
                         errors.push(`${p.playerName} : ${err.message}`);
                     }
                 }
-                setStatus(errors.length ? `⚠️ ${success} mis à jour, ${newGames} nouvelle(s) partie(s), erreurs :\n${errors.join('\n')}` : `✅ ${success} joueur(s) synchronisés, ${newGames} nouvelle(s) partie(s) enregistrée(s).`);
+                const hhmm = new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+                syncingRef.current = false;
+                setStatus(errors.length ? `[${hhmm}] ⚠️ ${success} mis à jour, ${newGames} nouvelle(s) partie(s), erreurs :\n${errors.join('\n')}` : `[${hhmm}] ✅ ${success} joueur(s) synchronisés, ${newGames} nouvelle(s) partie(s) enregistrée(s).`);
                 setLoading(false);
             };
+
+            // Synchro automatique toutes les 30 min, tant que la page reste ouverte (admin connecté + clé Riot saisie)
+            const [autoSync, setAutoSync] = useState(() => { try { return localStorage.getItem('autoSync') === '1'; } catch { return false; } });
+            const toggleAuto = (v) => { setAutoSync(v); try { localStorage.setItem('autoSync', v ? '1' : '0'); } catch {} };
+            const syncRef = useRef(handleSync);
+            syncRef.current = handleSync;
+            useEffect(() => {
+                if (!autoSync || !apiKey.trim()) return;
+                const id = setInterval(() => syncRef.current(), 30 * 60 * 1000);
+                return () => clearInterval(id);
+            }, [autoSync, apiKey]);
 
             const submitPlayer = async (e) => {
                 e.preventDefault();
@@ -1517,7 +1533,7 @@
                         <label className="flex items-start gap-3 cursor-pointer">
                             <input type="checkbox" checked={!!testMode} onChange={e => onToggleTestMode(e.target.checked)} className="mt-1 w-4 h-4 accent-amber-400" />
                             <span className="text-sm text-zinc-200">Mode admin / test : points infinis dans la boutique
-                                <span className="block text-xs text-zinc-500 mt-0.5">Tes achats sont gratuits et marqués « TEST ». Réglage propre à ce navigateur, actif seulement quand tu es connecté en organisateur. Les limites du jour (1 bonus, 1 malus) restent actives : annule un achat de test pour les libérer.</span>
+                                <span className="block text-xs text-zinc-500 mt-0.5">Tes achats sont gratuits, sans limite, et marqués « TEST ». Ils ne modifient jamais les LP et ne comptent pas dans les limites des vrais achats. Réglage propre à ce navigateur, actif seulement quand tu es connecté en organisateur.</span>
                             </span>
                         </label>
                     </div>
@@ -1542,6 +1558,12 @@
                                 {loading ? 'Sync...' : 'Synchroniser'}
                             </button>
                         </div>
+                        <label className="flex items-start gap-3 cursor-pointer mb-4">
+                            <input type="checkbox" checked={autoSync} onChange={e => toggleAuto(e.target.checked)} className="mt-1 w-4 h-4 accent-emerald-400" />
+                            <span className="text-sm text-zinc-200">Synchronisation automatique toutes les 30 minutes
+                                <span className="block text-xs text-zinc-500 mt-0.5">Fonctionne tant que cette page reste ouverte dans ton navigateur (connecté en organisateur, clé Riot saisie). Si tu fermes l'onglet ou si l'ordi se met en veille, elle s'arrête.</span>
+                            </span>
+                        </label>
                         {status && <pre className="p-3 bg-black/40 rounded-lg text-xs font-mono text-zinc-300 whitespace-pre-wrap">{status}</pre>}
                     </div>
 
@@ -1707,7 +1729,7 @@
                 cancelPurchase: async (x, label) => {
                     const b = writeBatch(db);
                     b.delete(doc(db, 'history', x.id));
-                    b.delete(doc(db, 'history', limitDocId(x)));
+                    if (!x.test) b.delete(doc(db, 'history', limitDocId(x))); // un achat de test n'a pas de marqueur
                     await b.commit();
                     notifyDiscord({ kind: 'cancel', buyerName: x.buyerName, label, price: x.price || 0, test: !!x.test });
                 },
@@ -1720,7 +1742,7 @@
                     const day = parisDay(now);
                     const category = categoryOf(kind, mode);
                     const limitRef = doc(db, 'history', limitDocId({ buyerId: buyer.id, day, category }));
-                    const purchaseRef = kind === 'ban' ? doc(db, 'history', `ban_${target.id}_${champ.id}_${day}`)
+                    const purchaseRef = test ? doc(collection(db, 'history')) : kind === 'ban' ? doc(db, 'history', `ban_${target.id}_${champ.id}_${day}`)
                         : kind === 'lpmove' ? doc(db, 'history', `lpmove_${buyer.id}`)
                         : doc(collection(db, 'history'));
                     const data = { type: 'purchase', kind, buyerId: buyer.id, buyerName: buyer.playerName, price, category, day, createdAt: serverTimestamp(), timestamp: now };
@@ -1729,7 +1751,10 @@
                     if (target) { data.targetId = target.id; data.targetName = target.playerName; }
                     if (champ) { data.championKey = champ.id; data.championName = champ.name; }
 
-                    await runTransaction(db, async tx => {
+                    if (test) {
+                        // Mode test : aucune limite (ni jour, ni unicité) et aucun marqueur, donc rien n'est consommé pour de vrai
+                        await setDoc(purchaseRef, data);
+                    } else await runTransaction(db, async tx => {
                         const limitSnap = await tx.get(limitRef);
                         const purchaseSnap = await tx.get(purchaseRef);
                         if (limitSnap.exists()) throw new Error(`Tu as déjà acheté ton ${category} aujourd'hui (1 ${category} par jour).`);
@@ -1848,7 +1873,8 @@
                         {tab === 'historique' && <HistoryView history={history} players={playersView} purchases={purchases} statuses={allStatuses} />}
                         {tab === 'boutique' && <ShopView players={playersView} matches={matchList} purchases={purchases} effects={effects} prices={prices} onBuy={crud.buyItem} isAdmin={isAdmin} testMode={testMode} onCancel={crud.cancelPurchase} />}
                         {tab === 'reglement' && <RulesView config={config} />}
-                        {tab === 'admin' && isAdmin && (
+                        {isAdmin && (
+                          <div className={tab === 'admin' ? '' : 'hidden'}>
                             <AdminPanel
                                 players={players}
                                 onAddPlayer={crud.add}
@@ -1865,6 +1891,7 @@
                                 onRequestReset={() => setShowReset(true)}
                                 onResetShop={resetShopPoints}
                             />
+                          </div>
                         )}
                     </main>
 
