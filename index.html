@@ -2523,6 +2523,10 @@
                 const teams = { rouge: 0, bleu: 0 };
                 pv.forEach(p => { if (teams[p.team] !== undefined) teams[p.team] += Number(p.lpDelta) || 0; });
                 await crud.updateConfig({ finalJson: JSON.stringify({ finishedAt: Date.now(), winnerId: sorted[0]?.id || null, teams, players: sorted.map(p => ({ id: p.id, name: p.playerName, team: p.team || '', lp: p.lpDelta || 0, img: p.profileImg || '', rank: p.rankLabel || '' })) }) });
+                // Annonce du vainqueur dans le channel des récaps
+                try {
+                    await fetch('/api/discord', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'final', buyerName: 'final', top: sorted.slice(0, 5).map(p => ({ name: p.playerName, lp: p.lpDelta || 0 })), teams }) });
+                } catch {}
             };
             const reopenChallenge = () => crud.updateConfig({ finalJson: '' });
 

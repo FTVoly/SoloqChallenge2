@@ -5,7 +5,9 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Méthode non autorisée' });
   }
 
-  const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
+  const isFinal = (typeof req.body === 'string' ? safeParse(req.body) : (req.body || {})).kind === 'final';
+  // L'annonce du vainqueur va dans le channel des récaps
+  const webhookUrl = isFinal ? process.env.DISCORD_RECAP_WEBHOOK_URL : process.env.DISCORD_WEBHOOK_URL;
   if (!webhookUrl) {
     // Pas encore configuré : on ignore sans erreur pour ne pas gêner l'achat
     return res.status(200).json({ skipped: true });
@@ -18,6 +20,29 @@ export default async function handler(req, res) {
   const buyer = clean(body.buyerName);
   const kind = body.kind;
   const mode = body.mode === 'gain' ? 'gain' : 'drain';
+
+  if (kind === 'final') {
+    const c = (v) => String(v ?? '').slice(0, 40).replace(/[@`*_~|>\\]/g, '').trim();
+    const lp = (v) => { const n = Math.round(Number(v) || 0); return `${n > 0 ? '+' : ''}${n} LP`; };
+    const top = (Array.isArray(body.top) ? body.top : []).slice(0, 5);
+    if (!top.length) return res.status(400).json({ error: 'Requête invalide' });
+    const medals = ['🥇', '🥈', '🥉', '4.', '5.'];
+    const t = body.teams || {};
+    const r = Number(t.rouge) || 0, b = Number(t.bleu) || 0;
+    const teamLine = r === b ? 'Égalité parfaite entre les deux équipes !' : `Équipe gagnante : **${r > b ? 'Rouge' : 'Bleue'}** (${lp(Math.max(r, b))} contre ${lp(Math.min(r, b))})`;
+    const embed = {
+      title: '🏆 Le SoloQ Challenge est terminé !',
+      description: `Le grand vainqueur est **${c(top[0].name)}** avec **${lp(top[0].lp)}** ! 🎉\n\n${top.map((x, i) => `${medals[i]} **${c(x.name)}** · ${lp(x.lp)}`).join('\n')}\n\n${teamLine}`,
+      color: 0xf59e0b,
+      footer: { text: 'Classement final · SoloQ Challenge' },
+      timestamp: new Date().toISOString(),
+    };
+    try {
+      const rr = await fetch(webhookUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ embeds: [embed], allowed_mentions: { parse: [] } }) });
+      if (!rr.ok) return res.status(502).json({ error: `Discord a répondu ${rr.status}` });
+      return res.status(200).json({ ok: true });
+    } catch (e) { return res.status(500).json({ error: e.message }); }
+  }
 
   if (!buyer || !['ban', 'shield', 'double', 'spells', 'lpmove', 'cancel', 'violation', 'jackpot', 'rank'].includes(kind)) {
     return res.status(400).json({ error: 'Requête invalide' });
