@@ -804,6 +804,7 @@
                 statuses[b.id] = !game ? { state: 'pending' } : {
                     state: 'used',
                     matchDocId: game.id,
+                    win: !!game.win,
                     played: game.championName,
                     violated: (game.championName || '').toLowerCase() === (b.championKey || '').toLowerCase()
                 };
@@ -846,14 +847,14 @@
                 if (x.kind === 'ban') {
                     const game = gamesOf(x.targetId).find(g => startOf(g) >= x.createdAt);
                     if (game && (game.championName || '').toLowerCase() === (x.championKey || '').toLowerCase())
-                        out.push({ id: x.id, kind: 'ban', offenderId: x.targetId, offenderName: nameOf(x.targetId), buyerName: x.buyerName, what: game.championName, createdAt: x.createdAt });
+                        out.push({ id: x.id, kind: 'ban', offenderId: x.targetId, offenderName: nameOf(x.targetId), buyerName: x.buyerName, what: game.championName, createdAt: x.createdAt, game });
                 } else if (x.kind === 'spells') {
                     const ms = gamesOf(x.targetId);
                     const idx = ms.findIndex(g => startOf(g) >= x.createdAt);
                     if (idx < 1) return;
                     const a = (ms[idx].spells || []).indexOf(4), b = (ms[idx - 1].spells || []).indexOf(4);
                     if (a >= 0 && b >= 0 && a === b)
-                        out.push({ id: x.id, kind: 'spells', offenderId: x.targetId, offenderName: nameOf(x.targetId), buyerName: x.buyerName, what: 'summoners non inversés', createdAt: x.createdAt });
+                        out.push({ id: x.id, kind: 'spells', offenderId: x.targetId, offenderName: nameOf(x.targetId), buyerName: x.buyerName, what: 'summoners non inversés', createdAt: x.createdAt, game: ms[idx] });
                 }
             });
             return out;
@@ -985,11 +986,18 @@
                     if (a >= 0 && b >= 0) check = a !== b ? 'ok' : 'ko';
                 }
                 const played = (game.spells || []).map(id => SPELL_NAMES[id] || '?').join(' / ');
-                statuses[sp.id] = { state: 'used', check, played, matchDocId: game.id };
+                statuses[sp.id] = { state: 'used', check, played, win: !!game.win, matchDocId: game.id };
             });
 
+            // Sanction : −20 LP, et si la partie est gagnée, les LP gagnés sur cette partie sont annulés aussi
             findViolations(players, matches, purchases).forEach(v => {
-                if (lpAdjust[v.offenderId] && v.createdAt >= resetAt[v.offenderId]) lpAdjust[v.offenderId].penalty -= VIOLATION_LP;
+                if (!lpAdjust[v.offenderId] || v.createdAt < resetAt[v.offenderId]) return;
+                lpAdjust[v.offenderId].penalty -= VIOLATION_LP;
+                if (v.game.win) {
+                    const known = gamesOf(v.offenderId).filter(g => typeof g.lpChange === 'number' && g.lpChange > 0).map(g => g.lpChange);
+                    const gain = typeof v.game.lpChange === 'number' ? Math.max(0, v.game.lpChange) : (known.length ? Math.round(known.reduce((a, b) => a + b, 0) / known.length) : 18);
+                    lpAdjust[v.offenderId].penalty -= gain * (qodGames[v.game.id] ? 2 : 1); // avec un quitte ou double, le gain doublé est annulé en entier
+                }
             });
             Object.values(lpAdjust).forEach(a => { a.total = a.qod + a.moves + a.penalty + a.jackpot + a.shield; });
             return { lpAdjust, statuses };
@@ -1000,7 +1008,7 @@
             if (x.kind === 'ban') {
                 if (st.state === 'pending') return { text: 'En attente de sa prochaine partie', tone: 'text-zinc-400' };
                 return st.violated
-                    ? { text: `⚠️ Non respecté : a joué ${st.played}${x.test ? '' : ` (−${VIOLATION_LP} LP)`}`, tone: 'text-red-400' }
+                    ? { text: `⚠️ Non respecté : a joué ${st.played}${x.test ? '' : ` (−${VIOLATION_LP} LP${st.win ? ' et LP de la victoire annulés' : ''})`}`, tone: 'text-red-400' }
                     : { text: `Respecté (a joué ${st.played})`, tone: 'text-emerald-400' };
             }
             if (x.kind === 'shield') {
@@ -1021,7 +1029,7 @@
             if (x.kind === 'spells') {
                 if (st.state === 'pending') return { text: 'En attente de sa prochaine partie', tone: 'text-zinc-400' };
                 if (st.check === 'ok') return { text: `Respecté (sorts : ${st.played})`, tone: 'text-emerald-400' };
-                if (st.check === 'ko') return { text: `⚠️ Non respecté (sorts : ${st.played})${x.test ? '' : ` (−${VIOLATION_LP} LP)`}`, tone: 'text-red-400' };
+                if (st.check === 'ko') return { text: `⚠️ Non respecté (sorts : ${st.played})${x.test ? '' : ` (−${VIOLATION_LP} LP${st.win ? ' et LP de la victoire annulés' : ''})`}`, tone: 'text-red-400' };
                 return { text: `Partie jouée (sorts : ${st.played}), à vérifier`, tone: 'text-zinc-400' };
             }
             if (x.kind === 'jackpot') {
@@ -2232,7 +2240,7 @@
                         tx.set(ref, { type: 'violation', purchaseId: v.id, playerId: v.offenderId, timestamp: Date.now() });
                         return true;
                     }).then(created => {
-                        if (created) notifyDiscord({ kind: 'violation', buyerName: v.offenderName, targetName: v.buyerName, label: v.what, mode: v.kind, price: VIOLATION_LP });
+                        if (created) notifyDiscord({ kind: 'violation', buyerName: v.offenderName, targetName: v.buyerName, label: v.what, mode: v.kind, price: VIOLATION_LP, win: !!v.game.win });
                     }).catch(() => notifiedRef.current.delete(v.id));
                 });
             }, [user, players, history, purchases]);

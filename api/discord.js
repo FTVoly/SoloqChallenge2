@@ -42,8 +42,8 @@ export default async function handler(req, res) {
     embed = {
       title: '⚠️ Malus non respecté',
       description: body.mode === 'ban'
-        ? `**${buyer}** a joué **${what}**, banni par **${by}**. Pénalité : **−${lp} LP**.`
-        : `**${buyer}** n'a pas inversé ses summoners (demandé par **${by}**). Pénalité : **−${lp} LP**.`,
+        ? `**${buyer}** a joué **${what}**, banni par **${by}**. Pénalité : **−${lp} LP**${body.win === true ? ' et les LP gagnés sur la partie sont annulés' : ''}.`
+        : `**${buyer}** n'a pas inversé ses summoners (demandé par **${by}**). Pénalité : **−${lp} LP**${body.win === true ? ' et les LP gagnés sur la partie sont annulés' : ''}.`,
       color: MALUS,
       footer: { text: `Pénalité · −${lp} LP · SoloQ Challenge` },
     };
