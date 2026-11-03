@@ -599,7 +599,7 @@
                         </div>
                         <div className="text-xs text-zinc-400">{ratio} KDA</div>
                         {lp !== null && lp !== undefined && (
-                            <div className={`text-xs font-bold mt-1 ${lp > 0 ? 'text-emerald-400' : lp < 0 ? 'text-red-400' : 'text-zinc-400'}`}>{formatLP(lp)} LP</div>
+                            <div className={`text-xs font-bold mt-1 ${lp > 0 ? 'text-emerald-400' : lp < 0 ? 'text-red-400' : 'text-zinc-400'}`}>{h.lpEstimated ? '≈' : ''}{formatLP(lp)} LP</div>
                         )}
                     </div>
 
@@ -782,32 +782,19 @@
                 const since = pl.shopResetAt || 0;
                 const ms = gamesOf(pl.id).filter(g => startOf(g) >= since);
                 const mine = purchases.filter(x => x.buyerId === pl.id && (x.createdAt || 0) >= since);
-                const shields = mine.filter(x => x.kind === 'shield').sort((a, b) => a.createdAt - b.createdAt);
 
-                // Un bouclier protège la 1re partie lancée APRÈS son achat
-                const shielded = {};
-                shields.forEach(sh => {
-                    const game = ms.find(g => startOf(g) >= sh.createdAt && !shielded[g.matchId]);
-                    if (game) shielded[game.matchId] = sh.id;
-                    else statuses[sh.id] = { state: 'active' };
-                });
-
-                let kills = 0, wins = 0, penalty = 0, saved = 0;
+                let kills = 0, wins = 0, penalty = 0;
                 ms.forEach(g => {
                     kills += g.kills || 0;
                     if (g.win) wins++;
-                    const pen = Math.floor((g.deaths || 0) / POINTS.deathsPerPenalty);
-                    const sid = shielded[g.matchId];
-                    if (sid && !g.win) saved += pen; else penalty += pen;
-                    if (sid) statuses[sid] = { state: 'used', win: !!g.win, saved: g.win ? 0 : pen, matchDocId: g.id };
+                    penalty += Math.floor((g.deaths || 0) / POINTS.deathsPerPenalty);
                 });
 
                 const spent = mine.reduce((acc, x) => acc + (x.price || 0), 0);
                 const earned = kills * POINTS.kill + wins * POINTS.win - penalty;
                 byPlayer[pl.id] = {
-                    games: ms.length, kills, wins, penalty, saved, spent, earned,
-                    balance: earned - spent,
-                    activeShields: shields.filter(sh => statuses[sh.id]?.state === 'active').length
+                    games: ms.length, kills, wins, penalty, spent, earned,
+                    balance: earned - spent
                 };
             });
 
@@ -823,6 +810,20 @@
             });
 
             return { byPlayer, statuses };
+        };
+
+        // Répartit la variation de LP entre deux synchros sur les parties jouées entre-temps (voir handleSync)
+        const splitLp = (games, delta) => {
+            const lpMap = {}, lpEst = {};
+            const n = games.length;
+            if (delta === null || delta === undefined || n === 0) return { lpMap, lpEst };
+            if (n === 1) { lpMap[games[0].id] = delta; return { lpMap, lpEst }; }
+            const nWin = games.filter(g => g.win).length;
+            if ((nWin === n && delta > 0) || (nWin === 0 && delta < 0)) {
+                const each = Math.trunc(delta / n);
+                games.forEach((g, k) => { lpMap[g.id] = k === n - 1 ? delta - each * (n - 1) : each; lpEst[g.id] = true; });
+            }
+            return { lpMap, lpEst };
         };
 
         const DEFAULT_PRICES = { shield: 10, double: 10, ban: 15, spells: 10, lpmove: 25, jackpot: 1500 }; // modifiables depuis l'Admin
@@ -895,7 +896,14 @@
             const lpAdjust = {};
             const statuses = {};
             const resetAt = {};
-            players.forEach(pl => { lpAdjust[pl.id] = { qod: 0, moves: 0, penalty: 0, jackpot: 0, total: 0 }; resetAt[pl.id] = pl.lpResetAt || 0; });
+            players.forEach(pl => { lpAdjust[pl.id] = { qod: 0, moves: 0, penalty: 0, jackpot: 0, shield: 0, total: 0 }; resetAt[pl.id] = pl.lpResetAt || 0; });
+
+            const qodGames = {};
+            // Quand la variation de LP d'une partie n'a pas pu être isolée : moyenne des LP perdus par ce joueur (18 par défaut)
+            const estimateLoss = (ms) => {
+                const known = ms.filter(g => typeof g.lpChange === 'number' && g.lpChange < 0).map(g => -g.lpChange);
+                return known.length ? Math.round(known.reduce((a, b) => a + b, 0) / known.length) : 18;
+            };
 
             // Quitte ou double : la 1re partie lancée après l'achat voit sa variation de LP comptée une 2e fois
             players.forEach(pl => {
@@ -905,12 +913,30 @@
                     const game = ms.find(g => startOf(g) >= d.createdAt && !used[g.matchId]);
                     if (!game) { statuses[d.id] = { state: 'pending' }; return; }
                     used[game.matchId] = true;
+                    qodGames[game.id] = true;
                     if (typeof game.lpChange === 'number') {
                         statuses[d.id] = { state: 'applied', win: !!game.win, lp: game.lpChange, matchDocId: game.id };
                         if (!d.test && d.createdAt >= resetAt[pl.id]) lpAdjust[pl.id].qod += game.lpChange;
                     } else {
                         statuses[d.id] = { state: 'toverify', win: !!game.win, matchDocId: game.id };
                     }
+                });
+            });
+
+            // Bouclier : si la 1re partie lancée après l'achat est perdue, les LP perdus dans le challenge ne comptent pas
+            players.forEach(pl => {
+                const ms = gamesOf(pl.id);
+                const used = {};
+                purchases.filter(x => x.kind === 'shield' && x.buyerId === pl.id).sort((a, b) => a.createdAt - b.createdAt).forEach(sh => {
+                    const game = ms.find(g => startOf(g) >= sh.createdAt && !used[g.matchId]);
+                    if (!game) { statuses[sh.id] = { state: 'active' }; return; }
+                    used[game.matchId] = true;
+                    if (game.win) { statuses[sh.id] = { state: 'used', win: true, saved: 0, matchDocId: game.id }; return; }
+                    const estimated = typeof game.lpChange !== 'number';
+                    const lost = estimated ? estimateLoss(ms) : Math.max(0, -game.lpChange);
+                    const saved = lost * (qodGames[game.id] ? 2 : 1); // avec un quitte ou double sur la même partie, la perte doublée est effacée
+                    statuses[sh.id] = { state: 'used', win: false, saved, estimated, matchDocId: game.id };
+                    if (!sh.test && sh.createdAt >= resetAt[pl.id]) lpAdjust[pl.id].shield += saved;
                 });
             });
 
@@ -933,21 +959,18 @@
                     if (!game) return;
                     played++;
                     if (game.win) { wins++; perGame[game.id] = `${o.playerName} a gagné : rien à récupérer`; return; }
-                    if (typeof game.lpChange === 'number') {
-                        const lost = Math.max(0, -game.lpChange);
-                        const part = Math.round(lost * JACKPOT_PCT / 100);
-                        gain += part;
-                        perGame[game.id] = `${o.playerName} a perdu ${lost} LP : +${part} LP pour ${j.buyerName}`;
-                    } else {
-                        verify.push({ matchDocId: game.id, playerName: o.playerName });
-                        perGame[game.id] = `${o.playerName} a perdu : LP à valider par l'organisateur`;
-                    }
+                    const estimated = typeof game.lpChange !== 'number';
+                    const lost = estimated ? estimateLoss(gamesOf(o.id)) : Math.max(0, -game.lpChange);
+                    const part = Math.round(lost * JACKPOT_PCT / 100);
+                    gain += part;
+                    if (estimated) verify.push({ matchDocId: game.id, playerName: o.playerName });
+                    perGame[game.id] = `${o.playerName} a perdu ${estimated ? '≈' : ''}${lost} LP : +${part} LP pour ${j.buyerName}`;
                 });
                 const everyone = others.length > 0 && played === others.length;
                 const bonus = everyone && wins === others.length;
                 const total = gain + (bonus ? JACKPOT_BONUS : 0);
                 if (!j.test && lpAdjust[j.buyerId] && j.createdAt >= resetAt[j.buyerId]) lpAdjust[j.buyerId].jackpot += total;
-                statuses[j.id] = { state: everyone ? (verify.length ? 'toverify' : 'done') : 'pending', played, expected: others.length, gain, bonus, total, perGame, verify };
+                statuses[j.id] = { state: everyone ? 'done' : 'pending', estimated: verify.length, played, expected: others.length, gain, bonus, total, perGame, verify };
             });
 
             // Summoners inversés : on compare avec la partie précédente (Saut éclair passé de D à F ou inversement)
@@ -968,7 +991,7 @@
             findViolations(players, matches, purchases).forEach(v => {
                 if (lpAdjust[v.offenderId] && v.createdAt >= resetAt[v.offenderId]) lpAdjust[v.offenderId].penalty -= VIOLATION_LP;
             });
-            Object.values(lpAdjust).forEach(a => { a.total = a.qod + a.moves + a.penalty + a.jackpot; });
+            Object.values(lpAdjust).forEach(a => { a.total = a.qod + a.moves + a.penalty + a.jackpot + a.shield; });
             return { lpAdjust, statuses };
         };
 
@@ -981,11 +1004,11 @@
                     : { text: `Respecté (a joué ${st.played})`, tone: 'text-emerald-400' };
             }
             if (x.kind === 'shield') {
-                if (st.state === 'active') return { text: 'Actif : protège sa prochaine partie', tone: 'text-blue-400' };
+                if (st.state === 'active') return { text: 'Actif : protège ses LP sur sa prochaine partie', tone: 'text-blue-400' };
                 if (st.win) return { text: 'Gaspillé (partie gagnée)', tone: 'text-zinc-500' };
                 return st.saved > 0
-                    ? { text: `A sauvé ${st.saved} point${st.saved > 1 ? 's' : ''}`, tone: 'text-emerald-400' }
-                    : { text: 'Utilisé (aucun point à protéger)', tone: 'text-zinc-500' };
+                    ? { text: `A sauvé ${st.estimated ? '≈' : ''}${st.saved} LP`, tone: 'text-emerald-400' }
+                    : { text: 'Utilisé (aucun LP perdu)', tone: 'text-zinc-500' };
             }
             if (x.kind === 'double') {
                 if (st.state === 'pending') return { text: 'En attente de sa prochaine partie', tone: 'text-blue-400' };
@@ -1004,8 +1027,7 @@
             if (x.kind === 'jackpot') {
                 const base = `${st.played}/${st.expected} joueurs ont joué`;
                 if (st.state === 'pending') return { text: `En cours : ${base} · déjà +${st.total} LP`, tone: 'text-amber-400' };
-                if (st.state === 'toverify') return { text: `${base} · LP à valider par l'organisateur (+${st.total} LP pour l'instant)`, tone: 'text-amber-400' };
-                return { text: `Terminé : +${st.gain} LP récupérés${st.bonus ? ` et +${JACKPOT_BONUS} LP (tout le monde a gagné)` : ''} = +${st.total} LP`, tone: 'text-emerald-400' };
+                return { text: `Terminé : +${st.gain} LP récupérés${st.estimated ? ' (certaines pertes estimées)' : ''}${st.bonus ? ` et +${JACKPOT_BONUS} LP (tout le monde a gagné)` : ''} = +${st.total} LP`, tone: 'text-emerald-400' };
             }
             if (x.kind === 'lpmove') return { text: `${x.mode === 'gain' ? '+' : '−'}${LPMOVE_LP} LP appliqués`, tone: x.mode === 'gain' ? 'text-emerald-400' : 'text-red-400' };
             return null;
@@ -1138,16 +1160,17 @@
                         {board.length === 0 && <div className="py-10 text-center text-zinc-500 italic text-sm">Aucun joueur.</div>}
                         <div className="divide-y divide-zinc-800/60">
                             {board.map((pl, i) => {
-                                const st = byPlayer[pl.id] || { kills: 0, wins: 0, penalty: 0, saved: 0, spent: 0, balance: 0, games: 0, activeShields: 0 };
+                                const st = byPlayer[pl.id] || { kills: 0, wins: 0, penalty: 0, spent: 0, balance: 0, games: 0 };
+                                const activeShields = purchases.filter(x => x.kind === 'shield' && x.buyerId === pl.id && !x.test && statuses[x.id]?.state === 'active').length;
                                 return (
                                     <div key={pl.id} className="px-4 py-3 flex flex-wrap items-center gap-x-4 gap-y-1">
                                         <div className="w-6 text-center font-heading font-bold text-zinc-500">{i + 1}</div>
                                         <img src={pl.profileImg || DEFAULT_ICON} alt="" className="w-9 h-9 rounded-full object-cover border border-zinc-700" />
                                         <div className="min-w-[140px] flex-1">
                                             <div className="font-bold text-zinc-100 text-sm flex items-center gap-2 flex-wrap">{pl.playerName} <TeamTag team={pl.team} />
-                                                {st.activeShields > 0 && <span className="inline-flex items-center gap-1 text-[10px] font-heading font-bold uppercase px-2 py-0.5 rounded-full border border-blue-500/40 bg-blue-500/10 text-blue-300"><Shield size={10} /> Bouclier</span>}
+                                                {activeShields > 0 && <span className="inline-flex items-center gap-1 text-[10px] font-heading font-bold uppercase px-2 py-0.5 rounded-full border border-blue-500/40 bg-blue-500/10 text-blue-300"><Shield size={10} /> Bouclier</span>}
                                             </div>
-                                            <div className="text-[11px] text-zinc-500">{st.games} partie{st.games > 1 ? 's' : ''} · {st.kills} kills · {st.wins} victoire{st.wins > 1 ? 's' : ''} · −{st.penalty} morts{st.saved > 0 ? ` (+${st.saved} sauvés)` : ''}{st.spent > 0 ? ` · ${st.spent} dépensés` : ''}</div>
+                                            <div className="text-[11px] text-zinc-500">{st.games} partie{st.games > 1 ? 's' : ''} · {st.kills} kills · {st.wins} victoire{st.wins > 1 ? 's' : ''} · −{st.penalty} morts{st.spent > 0 ? ` · ${st.spent} dépensés` : ''}</div>
                                         </div>
                                         <div className={`font-heading font-black text-2xl ${st.balance < 0 ? 'text-red-400' : 'text-white'}`}>{st.balance} <span className="text-xs font-semibold text-zinc-500">pts</span></div>
                                     </div>
@@ -1180,7 +1203,7 @@
                             <div className="space-y-3">
                                 <div className="font-heading font-bold text-sm uppercase tracking-wider text-blue-300 flex items-center gap-2"><Shield size={14} /> Bonus · pour toi</div>
                                 <ItemCard icon={<Shield size={16} className="text-blue-400" />} title="Bouclier" price={prices.shield} busy={busy} disabled={bonusUsed || kindFull('shield')} btnLabel="Acheter le bouclier" onBuy={() => buy('shield')}
-                                    desc={<>À acheter <b className="text-zinc-200">avant de lancer ta partie</b>. Si tu perds, les points perdus (morts) ne sont pas comptés. Si tu gagnes, il disparaît sans effet.</>} />
+                                    desc={<>À acheter <b className="text-zinc-200">avant de lancer ta partie</b>. Si tu perds, les LP que tu perds dans le challenge ne sont pas comptés. Si tu gagnes, il disparaît sans effet.</>} />
                                 <ItemCard icon={<Dices size={16} className="text-blue-400" />} title="Quitte ou double" price={prices.double} busy={busy} disabled={bonusUsed || kindFull('double')} btnLabel="Jouer quitte ou double" onBuy={() => buy('double')}
                                     desc={<>À acheter <b className="text-zinc-200">avant ta partie</b>. Victoire : tu gagnes 2× les LP. Défaite : tu perds 2× les LP.</>} />
                                 <ItemCard icon={<Crown size={16} className="text-amber-400" />} title="Bonus ultime" price={prices.jackpot} busy={busy} disabled={bonusUsed || kindFull('jackpot') || jackpotTaken} btnLabel={jackpotTaken ? `Déjà acheté par ${jackpotOwner}` : 'Acheter le bonus ultime'} onBuy={() => buy('jackpot')}
@@ -1811,8 +1834,8 @@
             if (!items.length) return null;
             return (
                 <div className="bg-zinc-900 p-6 rounded-2xl border border-amber-500/30">
-                    <h3 className="font-heading text-xl font-bold text-white flex items-center gap-2 mb-1"><Dices className="text-amber-400" /> Quitte ou double à valider</h3>
-                    <p className="text-xs text-zinc-400 mb-4">Plusieurs parties ont été jouées entre deux synchros : entre les LP gagnés (ex. 18) ou perdus (ex. −20) sur la partie concernée.</p>
+                    <h3 className="font-heading text-xl font-bold text-white flex items-center gap-2 mb-1"><Dices className="text-amber-400" /> LP à valider ou corriger</h3>
+                    <p className="text-xs text-zinc-400 mb-4">Plusieurs parties ont été jouées entre deux synchros, donc les LP exacts de la partie ne sont pas connus. Pour un quitte ou double, entre les LP gagnés (ex. 18) ou perdus (ex. −20). Pour le bonus ultime, une estimation est déjà appliquée : corrige seulement si tu veux.</p>
                     <div className="divide-y divide-zinc-800/70">
                         {items.map(x => (
                             <div key={x.id} className="flex flex-wrap items-center gap-3 py-2.5">
@@ -1915,14 +1938,22 @@
                             });
                             const known = new Set(matches.filter(m => m.playerId === p.id).map(m => m.matchId));
                             const fresh = (Array.isArray(ids) ? ids : []).filter(id => !known.has(id));
-                            // Un seul nouveau match depuis la dernière synchro : on peut lui attribuer la variation de LP
-                            const lpIfOne = (fresh.length === 1 && hasPrevious) ? currentAbsLP - p.currentAbsoluteLP : null;
-
-                            for (const matchId of [...fresh].reverse()) {
+                            // On récupère d'abord toutes les nouvelles parties, puis on répartit la variation de LP depuis la dernière synchro :
+                            //  - 1 seule partie : variation exacte
+                            //  - plusieurs parties toutes gagnées (ou toutes perdues) : répartie à parts égales (marquée « ≈ »)
+                            //  - mélange de victoires et de défaites : inconnue (null), estimée plus tard si besoin
+                            const infos = [];
+                            for (const matchId of fresh) {
                                 const m = await riot({ type: 'match', value: matchId });
                                 const info = m.info;
                                 const me = info.participants.find(x => x.puuid === accData.puuid);
-                                if (!me) continue;
+                                if (me) infos.push({ matchId, info, me });
+                            }
+                            infos.sort((a, b) => (a.info.gameCreation || 0) - (b.info.gameCreation || 0));
+                            const delta = hasPrevious ? currentAbsLP - p.currentAbsoluteLP : null;
+                            const { lpMap, lpEst } = splitLp(infos.map(i => ({ id: i.matchId, win: !!i.me.win })), delta);
+
+                            for (const { matchId, info, me } of infos) {
                                 await onSaveMatch(`${matchId}_${p.id}`, {
                                     type: 'match',
                                     matchId,
@@ -1943,7 +1974,8 @@
                                     multiKill: me.largestMultiKill || 0,
                                     items: [0, 1, 2, 3, 4, 5, 6].map(i => me['item' + i] || 0),
                                     spells: [me.summoner1Id, me.summoner2Id],
-                                    lpChange: lpIfOne,
+                                    lpChange: lpMap[matchId] ?? null,
+                                    lpEstimated: !!lpEst[matchId],
                                     participants: info.participants.map(x => ({
                                         n: x.riotIdGameName || x.summonerName || '?',
                                         c: x.championName,
@@ -2329,7 +2361,7 @@
             const pendingDoubles = useMemo(() => purchases
                 .filter(x => x.kind === 'double' && effects.statuses[x.id]?.state === 'toverify')
                 .map(x => ({ ...x, matchDocId: effects.statuses[x.id].matchDocId, win: effects.statuses[x.id].win }))
-                .concat(purchases.filter(x => x.kind === 'jackpot').flatMap(x => (effects.statuses[x.id]?.verify || []).map(v => ({ id: `${x.id}_${v.matchDocId}`, buyerName: `Bonus ultime de ${x.buyerName} · partie de ${v.playerName}`, matchDocId: v.matchDocId, win: false })))), [purchases, effects]);
+                .concat(purchases.filter(x => x.kind === 'jackpot').flatMap(x => (effects.statuses[x.id]?.verify || []).map(v => ({ id: `${x.id}_${v.matchDocId}`, buyerName: `Bonus ultime de ${x.buyerName} · partie de ${v.playerName} (estimée)`, matchDocId: v.matchDocId, win: false })))), [purchases, effects]);
 
             const stats = useMemo(() => {
                 const totalGames = players.reduce((acc, p) => acc + (p.wins || 0) + (p.losses || 0), 0);

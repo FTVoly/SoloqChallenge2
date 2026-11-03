@@ -99,7 +99,7 @@ export default async function handler(req, res) {
   } else {
     embed = {
       title: '🛡️ Bouclier acheté',
-      description: `**${buyer}** a acheté un bouclier : il protège ses points sur sa prochaine partie.`,
+      description: `**${buyer}** a acheté un bouclier : si sa prochaine partie est perdue, les LP perdus ne comptent pas.`,
       color: BONUS,
     };
   }
