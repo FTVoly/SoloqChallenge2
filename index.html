@@ -1105,6 +1105,10 @@
                 const cat = categoryOf(kind, mode);
                 const price = prices[kind];
                 const fail = (text) => setMsg({ ok: false, text });
+                const cw = challengeWindow(config);
+                if (!free && cw.end && Date.now() > cw.end) return fail('Le challenge est terminé : la boutique est fermée.');
+                if (!free && cw.start && Date.now() < cw.start) return fail('Le challenge n\'a pas encore commencé : la boutique ouvre au début.');
+                if (!free && config?.finalJson) return fail('Le challenge est terminé : la boutique est fermée.');
                 if (!buyer) return fail('Choisis d\'abord qui tu es.');
                 if (cat === 'malus' && !target) return fail('Choisis d\'abord le joueur ciblé.');
                 if (kind === 'ban' && !champ) return fail('Choisis le champion à bannir.');
@@ -1413,6 +1417,107 @@
             );
         };
 
+
+
+        // ---------- Dates du challenge (début / fin), clôture et animation du vainqueur ----------
+        // Les dates sont saisies à l'heure de Paris (format « 2026-11-05T20:00 »)
+        const parisToMs = (str) => {
+            if (!str) return null;
+            const asUtc = Date.parse(str + ':00Z');
+            if (Number.isNaN(asUtc)) return null;
+            const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: 'Europe/Paris', hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }).formatToParts(new Date(asUtc)).map(x => [x.type, x.value]));
+            const parisAsUtc = Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour, +parts.minute, +parts.second);
+            return asUtc - (parisAsUtc - asUtc);
+        };
+        const challengeWindow = (config) => ({ start: parisToMs(config?.challengeStart), end: parisToMs(config?.challengeEnd) });
+        const gameStart = (m) => m.gameCreation || ((m.timestamp || 0) - (m.duration || 0) * 1000);
+        const inWindow = (m, w) => { const g = gameStart(m); return (w.start == null || g >= w.start) && (w.end == null || g <= w.end); };
+        const fmtParis = (ms) => new Date(ms).toLocaleString('fr-FR', { timeZone: 'Europe/Paris', weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
+
+        const ChallengeBanner = ({ config, final, now, onShowFinale }) => {
+            const w = challengeWindow(config);
+            if (!w.start && !w.end && !final) return null;
+            let text, tone = 'border-zinc-800 bg-zinc-900/70 text-zinc-300';
+            if (final) { const win = (final.players || []).find(x => x.id === final.winnerId); text = <>🏆 Challenge terminé · vainqueur : <b className="text-white">{win?.name || '?'}</b> <button onClick={onShowFinale} className="ml-2 underline text-amber-300 hover:text-amber-200">Revoir l'animation</button></>; tone = 'border-amber-500/40 bg-amber-500/10 text-amber-100'; }
+            else if (w.start && now < w.start) text = <>Le challenge commence le <b className="text-white">{fmtParis(w.start)}</b></>;
+            else if (w.end && now >= w.end) text = <>🏁 Challenge terminé · les résultats finaux arrivent bientôt</>;
+            else if (w.end) {
+                const left = w.end - now, d = Math.floor(left / 86400000), h = Math.floor((left % 86400000) / 3600000);
+                text = <>Challenge en cours · fin le <b className="text-white">{fmtParis(w.end)}</b> ({d > 0 ? `${d} j ` : ''}{h} h restantes)</>;
+            } else text = <>Challenge en cours depuis le <b className="text-white">{fmtParis(w.start)}</b></>;
+            return <div className={`border-b px-4 py-2 text-center text-xs ${tone}`}>{text}</div>;
+        };
+
+        const Finale = ({ final, onClose }) => {
+            const winner = (final.players || []).find(x => x.id === final.winnerId) || (final.players || [])[0];
+            const top = (final.players || []).slice(0, 3);
+            const t = final.teams || { rouge: 0, bleu: 0 };
+            const teamWin = t.rouge === t.bleu ? null : (t.rouge > t.bleu ? 'rouge' : 'bleu');
+            const pieces = useMemo(() => Array.from({ length: 80 }, (_, i) => ({ left: Math.random() * 100, delay: Math.random() * 5, dur: 3 + Math.random() * 4, size: 6 + Math.random() * 8, color: ['#fbbf24', '#f87171', '#60a5fa', '#34d399', '#e879f9'][i % 5], round: i % 3 === 0 })), []);
+            if (!winner) return null;
+            return (
+                <div className="fixed inset-0 z-[100] bg-black/90 overflow-hidden flex items-center justify-center p-4" onClick={onClose}>
+                    <style>{`
+                        @keyframes fnFall { from { transform: translateY(-10vh) rotate(0deg); opacity: 1; } to { transform: translateY(110vh) rotate(720deg); opacity: .9; } }
+                        @keyframes fnPop { 0% { transform: scale(.2); opacity: 0; } 60% { transform: scale(1.15); opacity: 1; } 100% { transform: scale(1); } }
+                        @keyframes fnUp { from { transform: translateY(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+                        @keyframes fnGlow { 0%,100% { box-shadow: 0 0 25px #fbbf24aa; } 50% { box-shadow: 0 0 70px #fbbf24; } }
+                        @keyframes fnBounce { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-12px); } }
+                    `}</style>
+                    {pieces.map((c, i) => <span key={i} className="absolute top-0" style={{ left: `${c.left}%`, width: c.size, height: c.size * (c.round ? 1 : 1.6), background: c.color, borderRadius: c.round ? '50%' : 2, animation: `fnFall ${c.dur}s linear ${c.delay}s infinite` }}></span>)}
+                    <div className="relative text-center max-w-lg w-full" onClick={e => e.stopPropagation()}>
+                        <div className="text-6xl" style={{ animation: 'fnBounce 1.4s ease-in-out infinite' }}>🏆</div>
+                        <div className="mt-3 font-heading font-bold uppercase tracking-[0.3em] text-amber-300 text-sm" style={{ animation: 'fnUp .8s ease-out .2s both' }}>Le vainqueur du SoloQ Challenge</div>
+                        <img src={winner.img || DEFAULT_ICON} alt="" className="w-32 h-32 rounded-full object-cover border-4 border-amber-400 mx-auto mt-5" style={{ animation: 'fnPop .9s ease-out 1s both, fnGlow 2s ease-in-out 2s infinite' }} />
+                        <div className="font-heading font-black text-5xl text-white mt-5" style={{ animation: 'fnPop .8s ease-out 1.6s both' }}>{winner.name}</div>
+                        <div className="font-heading font-bold text-2xl text-amber-300 mt-1" style={{ animation: 'fnUp .8s ease-out 2.2s both' }}>{formatLP(winner.lp)} LP</div>
+                        <div className="mt-6 flex justify-center gap-3" style={{ animation: 'fnUp .8s ease-out 2.8s both' }}>
+                            {top.map((x, i) => <div key={x.id} className="rounded-xl border border-zinc-700 bg-zinc-900/80 px-3 py-2 text-sm text-zinc-200"><div className="text-lg">{['🥇', '🥈', '🥉'][i]}</div><b>{x.name}</b><div className="text-xs text-zinc-400">{formatLP(x.lp)} LP</div></div>)}
+                        </div>
+                        <div className="mt-5 text-sm text-zinc-300" style={{ animation: 'fnUp .8s ease-out 3.4s both' }}>
+                            {teamWin ? <>Équipe gagnante : <b className={TEAMS[teamWin].text}>{TEAMS[teamWin].label}</b> ({formatLP(t[teamWin])} LP contre {formatLP(t[teamWin === 'rouge' ? 'bleu' : 'rouge'])} LP)</> : <>Égalité parfaite entre les deux équipes !</>}
+                        </div>
+                        <button onClick={onClose} className="mt-7 bg-zinc-100 hover:bg-white text-zinc-900 font-heading font-bold px-6 py-2.5 rounded-xl" style={{ animation: 'fnUp .8s ease-out 4s both' }}>Voir le classement final</button>
+                    </div>
+                </div>
+            );
+        };
+
+        const ChallengeDatesEditor = ({ config, onUpdateConfig, onFinalizeNow, onReopen, final }) => {
+            const [start, setStart] = useState(config?.challengeStart || '');
+            const [end, setEnd] = useState(config?.challengeEnd || '');
+            const [saved, setSaved] = useState(false);
+            const [busy, setBusy] = useState(false);
+            useEffect(() => { setStart(config?.challengeStart || ''); setEnd(config?.challengeEnd || ''); }, [config]);
+            const save = async () => { await onUpdateConfig({ challengeStart: start, challengeEnd: end }); setSaved(true); setTimeout(() => setSaved(false), 2000); };
+            const finalize = async () => {
+                if (!window.confirm('Faire le refresh final et annoncer le vainqueur ? Le classement sera figé, la boutique fermée et la synchronisation désactivée.')) return;
+                setBusy(true);
+                try { await onFinalizeNow(); } finally { setBusy(false); }
+            };
+            const inputCls = 'w-full bg-zinc-950 border border-zinc-700 rounded-xl px-3 py-2 text-sm text-white';
+            return (
+                <div className="bg-zinc-900 p-6 rounded-2xl border border-zinc-800">
+                    <h3 className="font-heading text-xl font-bold text-white flex items-center gap-2 mb-1"><Clock className="text-zinc-400" /> Dates du challenge</h3>
+                    <p className="text-xs text-zinc-400 mb-4">Heure de Paris. Seules les parties lancées entre le début et la fin comptent (classement des points, boutique, records, historique) et la synchro ne récupère rien d'avant le début. Après la fin, le prochain refresh fait le refresh final et lance l'animation du vainqueur. Pense à réinitialiser les LP au moment du début.</p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+                        <label className="text-xs text-zinc-400">Début<input type="datetime-local" value={start} onChange={e => setStart(e.target.value)} className={inputCls + ' mt-1'} /></label>
+                        <label className="text-xs text-zinc-400">Fin<input type="datetime-local" value={end} onChange={e => setEnd(e.target.value)} className={inputCls + ' mt-1'} /></label>
+                    </div>
+                    <button onClick={save} className="w-full bg-zinc-100 hover:bg-white text-zinc-900 font-heading font-bold py-2.5 rounded-xl transition">{saved ? 'Enregistré ✓' : 'Enregistrer les dates'}</button>
+                    <div className="border-t border-zinc-800 mt-5 pt-4">
+                        {final ? (
+                            <div className="flex flex-wrap items-center gap-3 text-sm text-zinc-300">
+                                <span>🏁 Challenge clôturé le {fmtParis(final.finishedAt)}.</span>
+                                <button onClick={() => { if (window.confirm('Rouvrir le challenge ? Le classement final est supprimé et la synchro redevient possible.')) onReopen(); }} className="px-3 py-1.5 rounded-lg text-xs font-bold bg-zinc-800 hover:bg-zinc-700 text-zinc-200">Rouvrir le challenge</button>
+                            </div>
+                        ) : (
+                            <button onClick={finalize} disabled={busy} className="w-full bg-amber-500/90 hover:bg-amber-400 text-zinc-900 font-heading font-bold py-2.5 rounded-xl transition disabled:opacity-50">{busy ? 'Refresh final en cours…' : '🏆 Clôturer maintenant : refresh final + annoncer le vainqueur'}</button>
+                        )}
+                    </div>
+                </div>
+            );
+        };
 
         // ---------- Duels (paris entre joueurs : qui finira devant l'autre) ----------
         const parseDuels = (config) => { const d = parseJson(config?.duelsJson); return Array.isArray(d) ? d : []; };
@@ -1887,7 +1992,7 @@
             );
         };
 
-        const AdminPanel = ({ testMode, onToggleTestMode, players, matches, config, onUpdateConfig, pendingDoubles, onSetMatchLp, onAddPlayer, onUpdatePlayer, onSaveMatch, onRequestEdit, onRequestReset, onResetShop, viewPlayers, onNotify }) => {
+        const AdminPanel = ({ testMode, onToggleTestMode, players, matches, config, onUpdateConfig, pendingDoubles, onSetMatchLp, onAddPlayer, onUpdatePlayer, onSaveMatch, onRequestEdit, onRequestReset, onResetShop, viewPlayers, onNotify, onFinalize, onReopen }) => {
             const [apiKey, setApiKey] = useState(() => { try { return localStorage.getItem('riotApiKey') || ''; } catch { return ''; } });
             const [status, setStatus] = useState('');
             const [loading, setLoading] = useState(false);
@@ -1912,6 +2017,7 @@
             const syncingRef = useRef(false);
             const handleSync = async () => {
                 if (!apiKey.trim()) return setStatus("❌ Clé API Riot requise.");
+                if (config?.finalJson) return setStatus("🏁 Challenge clôturé : synchronisation désactivée (tu peux le rouvrir dans « Dates du challenge »).");
                 if (syncingRef.current) return;
                 syncingRef.current = true;
                 setLoading(true);
@@ -1947,7 +2053,7 @@
                         try {
                             const ids = await riot({
                                 type: 'matchids', value: accData.puuid, queue: '420', count: '20',
-                                ...(p.historySince ? { startTime: String(p.historySince) } : {})
+                                ...(Math.max(p.historySince || 0, Math.floor((challengeWindow(config).start || 0) / 1000)) ? { startTime: String(Math.max(p.historySince || 0, Math.floor((challengeWindow(config).start || 0) / 1000))) } : {})
                             });
                             const known = new Set(matches.filter(m => m.playerId === p.id).map(m => m.matchId));
                             const fresh = (Array.isArray(ids) ? ids : []).filter(id => !known.has(id));
@@ -2035,11 +2141,25 @@
             // Synchro automatique toutes les 30 min, tant que la page reste ouverte (admin connecté + clé Riot saisie)
             const [autoSync, setAutoSync] = useState(() => { try { return localStorage.getItem('autoSync') === '1'; } catch { return false; } });
             const toggleAuto = (v) => { setAutoSync(v); try { localStorage.setItem('autoSync', v ? '1' : '0'); } catch {} };
-            const syncRef = useRef(handleSync);
-            syncRef.current = handleSync;
+            const finalizeNow = async () => { await handleSync(); await onFinalize(); };
+            const syncRef = useRef(handleSync), finalRef = useRef(finalizeNow), cfgRef = useRef(config), lastRun = useRef(0), finalizing = useRef(false);
+            syncRef.current = handleSync; finalRef.current = finalizeNow; cfgRef.current = config;
+            // Vérifie chaque minute : synchro toutes les 30 min, et refresh final automatique dès que la date de fin est passée
             useEffect(() => {
                 if (!autoSync || !apiKey.trim()) return;
-                const id = setInterval(() => syncRef.current(), 30 * 60 * 1000);
+                const id = setInterval(async () => {
+                    const c = cfgRef.current;
+                    if (c?.finalJson) return;
+                    const end = challengeWindow(c).end;
+                    if (end && Date.now() >= end) {
+                        if (finalizing.current) return;
+                        finalizing.current = true;
+                        try { await finalRef.current(); } finally { finalizing.current = false; }
+                    } else if (Date.now() - lastRun.current >= 30 * 60 * 1000) {
+                        lastRun.current = Date.now();
+                        syncRef.current();
+                    }
+                }, 60 * 1000);
                 return () => clearInterval(id);
             }, [autoSync, apiKey]);
 
@@ -2155,6 +2275,8 @@
                     <DoubleValidator items={pendingDoubles || []} onSetMatchLp={onSetMatchLp} />
 
                     <OverlayHelper />
+
+                    <ChallengeDatesEditor config={config} onUpdateConfig={onUpdateConfig} onFinalizeNow={finalizeNow} onReopen={onReopen} final={parseJson(config?.finalJson).players ? parseJson(config?.finalJson) : null} />
 
                     <DuelsEditor config={config} players={players} viewPlayers={viewPlayers || players} onUpdateConfig={onUpdateConfig} />
 
@@ -2296,6 +2418,8 @@
                     if (target) { data.targetId = target.id; data.targetName = target.playerName; }
                     if (champ) { data.championKey = champ.id; data.championName = champ.name; }
 
+                    const cw = challengeWindow(config);
+                    if (!test && ((cw.end && now > cw.end) || (cw.start && now < cw.start) || config?.finalJson)) throw new Error('La boutique est fermée (hors période du challenge).');
                     if (test) {
                         // Mode test : aucune limite et aucun compteur, donc rien n'est consommé pour de vrai
                         await setDoc(purchaseRef, data);
@@ -2362,7 +2486,11 @@
                 }
             };
 
-            const matchList = useMemo(() => history.filter(h => h.type === 'match'), [history]);
+            const challengeWin = useMemo(() => challengeWindow(config), [config]);
+            const rawMatchList = useMemo(() => history.filter(h => h.type === 'match'), [history]);
+            // Seules les parties lancées pendant le challenge comptent partout, sauf pour la synchro (qui garde la liste complète pour ne pas ré-enregistrer)
+            const matchList = useMemo(() => rawMatchList.filter(m => inWindow(m, challengeWin)), [rawMatchList, challengeWin]);
+            const historyView = useMemo(() => history.filter(h => h.type !== 'match' || inWindow(h, challengeWin)), [history, challengeWin]);
             const effects = useMemo(() => computeEffects(players, matchList, purchases), [players, matchList, purchases]);
             // Les LP affichés = LP Riot + effets de la boutique (quitte ou double, coup de pouce / sabotage)
             const playersView = useMemo(() => players.map(p => {
@@ -2375,6 +2503,28 @@
                 .filter(x => x.kind === 'double' && effects.statuses[x.id]?.state === 'toverify')
                 .map(x => ({ ...x, matchDocId: effects.statuses[x.id].matchDocId, win: effects.statuses[x.id].win }))
                 .concat(purchases.filter(x => x.kind === 'jackpot').flatMap(x => (effects.statuses[x.id]?.verify || []).map(v => ({ id: `${x.id}_${v.matchDocId}`, buyerName: `Bonus ultime de ${x.buyerName} · partie de ${v.playerName} (estimée)`, matchDocId: v.matchDocId, win: false })))), [purchases, effects]);
+
+            const final = useMemo(() => { const f = parseJson(config?.finalJson); return f.players ? f : null; }, [config]);
+            const [showFinale, setShowFinale] = useState(false);
+            useEffect(() => {
+                if (!final) { setShowFinale(false); return; }
+                try { if (localStorage.getItem('finaleSeen') !== String(final.finishedAt)) setShowFinale(true); } catch { setShowFinale(true); }
+            }, [final?.finishedAt]);
+            const closeFinale = () => { setShowFinale(false); try { localStorage.setItem('finaleSeen', String(final?.finishedAt)); } catch {} };
+            const [now, setNow] = useState(Date.now());
+            useEffect(() => { const t = setInterval(() => setNow(Date.now()), 30000); return () => clearInterval(t); }, []);
+            const playersViewRef = useRef(playersView);
+            playersViewRef.current = playersView;
+            // Refresh final : fige le classement (individuel et par équipe) pour l'animation du vainqueur
+            const finalizeChallenge = async () => {
+                await new Promise(r => setTimeout(r, 3000)); // laisse arriver les derniers LP
+                const pv = playersViewRef.current;
+                const sorted = [...pv].sort((a, b) => (b.lpDelta || 0) - (a.lpDelta || 0));
+                const teams = { rouge: 0, bleu: 0 };
+                pv.forEach(p => { if (teams[p.team] !== undefined) teams[p.team] += Number(p.lpDelta) || 0; });
+                await crud.updateConfig({ finalJson: JSON.stringify({ finishedAt: Date.now(), winnerId: sorted[0]?.id || null, teams, players: sorted.map(p => ({ id: p.id, name: p.playerName, team: p.team || '', lp: p.lpDelta || 0, img: p.profileImg || '', rank: p.rankLabel || '' })) }) });
+            };
+            const reopenChallenge = () => crud.updateConfig({ finalJson: '' });
 
             const stats = useMemo(() => {
                 const totalGames = players.reduce((acc, p) => acc + (p.wins || 0) + (p.losses || 0), 0);
@@ -2424,11 +2574,14 @@
                         </div>
                     </header>
 
+                    <ChallengeBanner config={config} final={final} now={now} onShowFinale={() => setShowFinale(true)} />
+                    {showFinale && final && <Finale final={final} onClose={closeFinale} />}
+
                     {/* Main content */}
                     <main className="max-w-7xl mx-auto px-4 py-8 flex-1 w-full">
                         {tab === 'classement' && <Leaderboard players={playersView} isAdmin={isAdmin} onRequestDelete={setToDelete} onRequestEdit={setToEdit} />}
                         {tab === 'joueurs' && <PlayersList players={playersView} />}
-                        {tab === 'historique' && <HistoryView history={history} players={playersView} purchases={purchases} statuses={allStatuses} />}
+                        {tab === 'historique' && <HistoryView history={historyView} players={playersView} purchases={purchases} statuses={allStatuses} />}
                         {tab === 'boutique' && <ShopView players={playersView} matches={matchList} purchases={purchases} effects={effects} prices={prices} config={config} onBuy={crud.buyItem} isAdmin={isAdmin} testMode={testMode} onCancel={crud.cancelPurchase} />}
                         {tab === 'duels' && <DuelsView duels={parseDuels(config)} players={playersView} />}
                         {tab === 'records' && <RecordsView players={playersView} matches={matchList} />}
@@ -2439,7 +2592,7 @@
                                 players={players}
                                 onAddPlayer={crud.add}
                                 onUpdatePlayer={crud.update}
-                                matches={matchList}
+                                matches={rawMatchList}
                                 onSaveMatch={crud.saveMatch}
                                 config={config}
                                 onUpdateConfig={crud.updateConfig}
@@ -2450,6 +2603,8 @@
                                 onRequestEdit={setToEdit}
                                 onRequestReset={() => setShowReset(true)}
                                 onResetShop={resetShopPoints}
+                                onFinalize={finalizeChallenge}
+                                onReopen={reopenChallenge}
                                 viewPlayers={playersView}
                                 onNotify={notifyDiscord}
                             />
