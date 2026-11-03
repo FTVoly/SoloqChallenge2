@@ -1547,14 +1547,19 @@
             return { records, titles };
         };
 
-        const RecordsView = ({ players, matches }) => {
+        const RecordsView = ({ players, matches: allMatches }) => {
             const version = useDdragonVersion();
+            // Seules les parties du challenge en cours comptent : celles lancées après la dernière réinitialisation des LP de chaque joueur
+            const matches = useMemo(() => {
+                const since = Object.fromEntries(players.map(p => [p.id, p.lpResetAt || 0]));
+                return allMatches.filter(m => (m.gameCreation || ((m.timestamp || 0) - (m.duration || 0) * 1000)) >= (since[m.playerId] || 0));
+            }, [players, allMatches]);
             const { records, titles } = useMemo(() => computeRecords(players, matches), [players, matches]);
             return (
                 <div className="max-w-5xl mx-auto space-y-6">
                     <div>
                         <h2 className="text-2xl font-bold font-heading text-white flex items-center gap-2"><Medal className="text-zinc-400" /> Records & titres</h2>
-                        <p className="text-xs text-zinc-400 mt-0.5">Calculés sur les parties classées solo/duo enregistrées.</p>
+                        <p className="text-xs text-zinc-400 mt-0.5">Calculés uniquement sur les parties du challenge en cours (depuis la dernière réinitialisation des LP).</p>
                     </div>
                     {titles.length > 0 && (
                         <div className="flex flex-wrap gap-2">
