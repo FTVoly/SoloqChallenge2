@@ -37,7 +37,7 @@ export function buildRecap(players, duels) {
       inline: false,
     });
   }
-  return [{ title: '📊 Récap du jour · SoloQ Challenge', color: 0x71717a, fields, footer: { text: 'LP Riot (hors bonus et malus de la boutique)' }, timestamp: new Date().toISOString() }];
+  return [{ title: '📊 Récap du jour · SoloQ Challenge', color: 0x71717a, fields, footer: { text: 'LP du challenge (barème maison + boutique)' }, timestamp: new Date().toISOString() }];
 }
 
 export default async function handler(req, res) {
@@ -60,6 +60,12 @@ export default async function handler(req, res) {
     const cfg = await fetch(`${base}/config/main`, { headers }).then(r => r.json());
     let duels = [];
     try { duels = JSON.parse(plain(cfg).duelsJson || '[]'); } catch {}
+    // Classement du challenge publié par le site (barème maison + boutique) ; à défaut, LP Riot
+    try {
+      const st = JSON.parse(plain(cfg).standingsJson || '{}');
+      const lp = Object.fromEntries(JSON.parse(st.key || '[]'));
+      players.forEach(p => { if (p.id in lp) p.lpDelta = lp[p.id]; });
+    } catch {}
     if (!players.length) return res.status(200).json({ skipped: 'aucun joueur' });
 
     const r = await fetch(webhook, {
