@@ -835,9 +835,9 @@
             return { lpMap, lpEst };
         };
 
-        const DEFAULT_PRICES = { shield: 30, double: 25, ban: 35, spells: 30, lpmove: 60, jackpot: 400 }; // modifiables depuis l'Admin
+        const DEFAULT_PRICES = { shield: 60, double: 50, ban: 70, spells: 50, lpmove: 120, jackpot: 550 }; // modifiables depuis l'Admin
         // Version 2 des prix (rééquilibrage nov. 2026) : les anciens prix enregistrés ne sont plus repris
-        const PRICES_VERSION = 2;
+        const PRICES_VERSION = 3;
         const pricesOf = (config) => ({ ...DEFAULT_PRICES, ...(config?.pricesVersion === PRICES_VERSION ? (config?.prices || {}) : {}) });
         // ---------- LP du challenge (barème maison, identique pour tout le monde) ----------
         // Victoire : +min à +max LP, défaite : −min à −max LP, remake : 0. La valeur est tirée une fois pour toutes
