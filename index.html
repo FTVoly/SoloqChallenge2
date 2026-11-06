@@ -835,7 +835,10 @@
             return { lpMap, lpEst };
         };
 
-        const DEFAULT_PRICES = { shield: 10, double: 10, ban: 15, spells: 10, lpmove: 25, jackpot: 1500 }; // modifiables depuis l'Admin
+        const DEFAULT_PRICES = { shield: 30, double: 25, ban: 35, spells: 30, lpmove: 60, jackpot: 400 }; // modifiables depuis l'Admin
+        // Version 2 des prix (rééquilibrage nov. 2026) : les anciens prix enregistrés ne sont plus repris
+        const PRICES_VERSION = 2;
+        const pricesOf = (config) => ({ ...DEFAULT_PRICES, ...(config?.pricesVersion === PRICES_VERSION ? (config?.prices || {}) : {}) });
         // ---------- LP du challenge (barème maison, identique pour tout le monde) ----------
         // Victoire : +min à +max LP, défaite : −min à −max LP, remake : 0. La valeur est tirée une fois pour toutes
         // à partir de l'identifiant de la partie (toujours la même à chaque rechargement).
@@ -1517,8 +1520,18 @@
             const [end, setEnd] = useState(config?.challengeEnd || '');
             const [saved, setSaved] = useState(false);
             const [busy, setBusy] = useState(false);
-            useEffect(() => { setStart(config?.challengeStart || ''); setEnd(config?.challengeEnd || ''); }, [config]);
-            const save = async () => { await onUpdateConfig({ challengeStart: start, challengeEnd: end }); setSaved(true); setTimeout(() => setSaved(false), 2000); };
+            useEffect(() => { setStart(config?.challengeStart || ''); setEnd(config?.challengeEnd || ''); }, [config?.challengeStart, config?.challengeEnd]);
+            const [err, setErr] = useState('');
+            const save = async () => {
+                const a = parisToMs(start), b = parisToMs(end), y = (ms) => new Date(ms).getUTCFullYear();
+                if (start && (a == null || y(a) < 2024 || y(a) > 2100)) return setErr('Date de début invalide (vérifie l\'année).');
+                if (end && (b == null || y(b) < 2024 || y(b) > 2100)) return setErr('Date de fin invalide (vérifie l\'année).');
+                if (a != null && b != null && b <= a) return setErr('La fin doit être après le début.');
+                if (b != null && b <= Date.now() && !window.confirm('Cette date de fin est déjà passée. Enregistrer quand même ? (la clôture automatique ne se déclenchera pas pour une date déjà passée)')) return;
+                setErr('');
+                await onUpdateConfig({ challengeStart: start, challengeEnd: end });
+                setSaved(true); setTimeout(() => setSaved(false), 2000);
+            };
             const finalize = async () => {
                 if (!window.confirm('Faire le refresh final et annoncer le vainqueur ? Le classement sera figé, la boutique fermée et la synchronisation désactivée.')) return;
                 setBusy(true);
@@ -1533,11 +1546,12 @@
                         <label className="text-xs text-zinc-400">Début<input type="datetime-local" value={start} onChange={e => setStart(e.target.value)} className={inputCls + ' mt-1'} /></label>
                         <label className="text-xs text-zinc-400">Fin<input type="datetime-local" value={end} onChange={e => setEnd(e.target.value)} className={inputCls + ' mt-1'} /></label>
                     </div>
+                    {err && <p className="text-xs text-red-400 mb-2">{err}</p>}
                     <button onClick={save} className="w-full bg-zinc-100 hover:bg-white text-zinc-900 font-heading font-bold py-2.5 rounded-xl transition">{saved ? 'Enregistré ✓' : 'Enregistrer les dates'}</button>
                     <div className="border-t border-zinc-800 mt-5 pt-4">
                         {final ? (
                             <div className="flex flex-wrap items-center gap-3 text-sm text-zinc-300">
-                                <span>🏁 Challenge clôturé le {fmtParis(final.finishedAt)}.</span>
+                                <span>🏁 Challenge clôturé le {fmtParis(final.finishedAt)} ({final.mode === 'auto' ? `automatiquement, fin prévue le ${fmtParis(final.endAt || final.finishedAt)}` : 'manuellement'}).</span>
                                 <button onClick={() => { if (window.confirm('Rouvrir le challenge ? Le classement final est supprimé et la synchro redevient possible.')) onReopen(); }} className="px-3 py-1.5 rounded-lg text-xs font-bold bg-zinc-800 hover:bg-zinc-700 text-zinc-200">Rouvrir le challenge</button>
                             </div>
                         ) : (
@@ -1885,7 +1899,7 @@
         const LpRuleEditor = ({ config, onUpdateConfig }) => {
             const cur = lpRuleOf(config);
             const [min, setMin] = useState(cur.min), [max, setMax] = useState(cur.max), [saved, setSaved] = useState(false);
-            useEffect(() => { const r = lpRuleOf(config); setMin(r.min); setMax(r.max); }, [config]);
+            useEffect(() => { const r = lpRuleOf(config); setMin(r.min); setMax(r.max); }, [JSON.stringify(lpRuleOf(config))]);
             const save = async () => { await onUpdateConfig({ lpRule: lpRuleOf({ lpRule: { min, max } }) }); setSaved(true); setTimeout(() => setSaved(false), 2000); };
             const cls = 'w-20 bg-zinc-950 border border-zinc-700 rounded-xl px-3 py-2 text-sm text-white text-center';
             return (
@@ -1901,14 +1915,14 @@
         };
 
         const PricesEditor = ({ config, onUpdateConfig }) => {
-            const fromConfig = () => ({ ...DEFAULT_PRICES, ...(config?.prices || {}) });
+            const fromConfig = () => pricesOf(config);
             const [vals, setVals] = useState(fromConfig);
             const [saved, setSaved] = useState(false);
-            useEffect(() => { setVals(fromConfig()); }, [config]);
+            useEffect(() => { setVals(fromConfig()); }, [JSON.stringify(pricesOf(config))]);
             const labels = { shield: 'Bouclier', double: 'Quitte ou double', ban: 'Bannir un champion', spells: 'Summoners inversés', lpmove: '±10 LP', jackpot: 'Bonus ultime' };
             const save = async () => {
                 const prices = Object.fromEntries(Object.keys(DEFAULT_PRICES).map(k => [k, Math.max(0, Math.round(Number(vals[k]) || 0))]));
-                await onUpdateConfig({ prices });
+                await onUpdateConfig({ prices, pricesVersion: PRICES_VERSION });
                 setSaved(true);
                 setTimeout(() => setSaved(false), 2000);
             };
@@ -1945,7 +1959,7 @@
             const [per, setPer] = useState(() => parseJson(config?.playerLimitsJson));
             const [pid, setPid] = useState('');
             const [saved, setSaved] = useState(false);
-            useEffect(() => { setBase(explicitLimits(parseJson(config?.limitsJson))); setPer(parseJson(config?.playerLimitsJson)); }, [config]);
+            useEffect(() => { setBase(explicitLimits(parseJson(config?.limitsJson))); setPer(parseJson(config?.playerLimitsJson)); }, [config?.limitsJson, config?.playerLimitsJson]);
             const names = { shield: 'Bouclier', double: 'Quitte ou double', ban: 'Bannir un champion', spells: 'Summoners inversés', lpmove: '±10 LP (coup de pouce / sabotage)', jackpot: 'Bonus ultime (1 seul joueur du tournoi)' };
             const rows = [{ cat: 'bonus', label: 'Bonus au total par jour' }, { cat: 'malus', label: 'Malus au total par jour' }, ...Object.keys(DEFAULT_PRICES).map(k => ({ kind: k, label: names[k] }))];
             const get = (L, r, f) => r.cat ? L.catDay?.[r.cat] : L.kinds?.[r.kind]?.[f];
@@ -2189,7 +2203,7 @@
             // Synchro automatique toutes les 30 min, tant que la page reste ouverte (admin connecté + clé Riot saisie)
             const [autoSync, setAutoSync] = useState(() => { try { return localStorage.getItem('autoSync') === '1'; } catch { return false; } });
             const toggleAuto = (v) => { setAutoSync(v); try { localStorage.setItem('autoSync', v ? '1' : '0'); } catch {} };
-            const finalizeNow = async () => { await handleSync(); await onFinalize(); };
+            const finalizeNow = async (mode = 'manual') => { await handleSync(); await onFinalize(mode); };
             const syncRef = useRef(handleSync), finalRef = useRef(finalizeNow), cfgRef = useRef(config), lastRun = useRef(0), finalizing = useRef(false);
             syncRef.current = handleSync; finalRef.current = finalizeNow; cfgRef.current = config;
             // Vérifie chaque minute : synchro toutes les 30 min, et refresh final automatique dès que la date de fin est passée
@@ -2199,10 +2213,12 @@
                     const c = cfgRef.current;
                     if (c?.finalJson) return;
                     const end = challengeWindow(c).end;
-                    if (end && Date.now() >= end) {
+                    // Clôture auto seulement si la fin vient de passer (moins de 24 h), et une seule fois pour cette date de fin :
+                    // après « Rouvrir le challenge », elle ne se relance donc pas toute seule
+                    if (end && Date.now() >= end && Date.now() - end < 24 * 3600 * 1000 && c?.autoClosedEnd !== c?.challengeEnd) {
                         if (finalizing.current) return;
                         finalizing.current = true;
-                        try { await finalRef.current(); } finally { finalizing.current = false; }
+                        try { await finalRef.current('auto'); } finally { finalizing.current = false; }
                     } else if (Date.now() - lastRun.current >= 30 * 60 * 1000) {
                         lastRun.current = Date.now();
                         syncRef.current();
@@ -2326,7 +2342,7 @@
 
                     <OverlayHelper />
 
-                    <ChallengeDatesEditor config={config} onUpdateConfig={onUpdateConfig} onFinalizeNow={finalizeNow} onReopen={onReopen} final={parseJson(config?.finalJson).players ? parseJson(config?.finalJson) : null} />
+                    <ChallengeDatesEditor config={config} onUpdateConfig={onUpdateConfig} onFinalizeNow={() => finalizeNow('manual')} onReopen={onReopen} final={parseJson(config?.finalJson).players ? parseJson(config?.finalJson) : null} />
 
                     <DuelsEditor config={config} players={players} viewPlayers={viewPlayers || players} onUpdateConfig={onUpdateConfig} />
 
@@ -2558,7 +2574,7 @@
                 return { ...p, riotLpDelta: p.lpDelta || 0, lpBase: base, lpAdjust: adj, lpDelta: base + adj };
             }), [players, matchList, effects]);
             const allStatuses = useMemo(() => ({ ...computeShop(players, matchList, purchases).statuses, ...effects.statuses }), [players, matchList, purchases, effects]);
-            const prices = useMemo(() => ({ ...DEFAULT_PRICES, ...(config?.prices || {}) }), [config]);
+            const prices = useMemo(() => pricesOf(config), [config]);
             const pendingDoubles = useMemo(() => purchases
                 .filter(x => x.kind === 'double' && effects.statuses[x.id]?.state === 'toverify')
                 .map(x => ({ ...x, matchDocId: effects.statuses[x.id].matchDocId, win: effects.statuses[x.id].win }))
@@ -2584,13 +2600,13 @@
             const playersViewRef = useRef(playersView);
             playersViewRef.current = playersView;
             // Refresh final : fige le classement (individuel et par équipe) pour l'animation du vainqueur
-            const finalizeChallenge = async () => {
+            const finalizeChallenge = async (mode = 'manual') => {
                 await new Promise(r => setTimeout(r, 3000)); // laisse arriver les derniers LP
                 const pv = playersViewRef.current;
                 const sorted = [...pv].sort((a, b) => (b.lpDelta || 0) - (a.lpDelta || 0));
                 const teams = { rouge: 0, bleu: 0 };
                 pv.forEach(p => { if (teams[p.team] !== undefined) teams[p.team] += Number(p.lpDelta) || 0; });
-                await crud.updateConfig({ finalJson: JSON.stringify({ finishedAt: Date.now(), winnerId: sorted[0]?.id || null, teams, players: sorted.map(p => ({ id: p.id, name: p.playerName, team: p.team || '', lp: p.lpDelta || 0, img: p.profileImg || '', rank: p.rankLabel || '' })) }) });
+                await crud.updateConfig({ ...(mode === 'auto' ? { autoClosedEnd: config?.challengeEnd || '' } : {}), finalJson: JSON.stringify({ mode, endAt: challengeWindow(config).end, finishedAt: Date.now(), winnerId: sorted[0]?.id || null, teams, players: sorted.map(p => ({ id: p.id, name: p.playerName, team: p.team || '', lp: p.lpDelta || 0, img: p.profileImg || '', rank: p.rankLabel || '' })) }) });
                 // Annonce du vainqueur dans le channel des récaps
                 try {
                     await fetch('/api/discord', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'final', buyerName: 'final', top: sorted.slice(0, 5).map(p => ({ name: p.playerName, lp: p.lpDelta || 0 })), teams }) });
