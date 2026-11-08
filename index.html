@@ -1515,6 +1515,46 @@
             );
         };
 
+        const ServerSyncCard = ({ config, adminPwd, localKey }) => {
+            const [key, setKey] = useState('');
+            const [msg, setMsg] = useState(null);
+            const [busy, setBusy] = useState(false);
+            const post = async (url, opts) => { const r = await fetch(url, opts); const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || `Erreur ${r.status}`); return j; };
+            const saveKey = async (k) => {
+                setBusy(true); setMsg(null);
+                try { await post('/api/riot-key', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: adminPwd, key: k.trim() }) }); setKey(''); setMsg({ ok: true, text: 'Clé enregistrée ✓ La synchro automatique tourne toutes les 30 min.' }); }
+                catch (e) { setMsg({ ok: false, text: e.message }); } finally { setBusy(false); }
+            };
+            const syncNow = async () => {
+                setBusy(true); setMsg(null);
+                try { const j = await post('/api/sync', { headers: { 'x-admin-password': adminPwd } }); setMsg({ ok: j.ok !== false, text: j.skipped ? `Rien fait : ${j.skipped}` : `${j.done}/${j.total} joueurs · ${j.newGames} nouvelle(s) partie(s)${j.stopped ? ` · ${j.stopped}` : ''}` }); }
+                catch (e) { setMsg({ ok: false, text: e.message }); } finally { setBusy(false); }
+            };
+            const savedAt = config?.riotKeySavedAt, expires = savedAt ? savedAt + 24 * 3600 * 1000 : null;
+            const left = expires ? expires - Date.now() : null;
+            const fmt = (ms) => new Date(ms).toLocaleString('fr-FR', { timeZone: 'Europe/Paris', weekday: 'short', hour: '2-digit', minute: '2-digit' });
+            return (
+                <div className={`bg-zinc-900 p-6 rounded-2xl border ${config?.syncError || (left !== null && left < 0) ? 'border-red-500/50' : 'border-zinc-800'}`}>
+                    <h3 className="font-heading text-xl font-bold text-white flex items-center gap-2 mb-1"><RotateCcw className="text-zinc-400" /> Synchro automatique (sans ton ordi)</h3>
+                    <p className="text-xs text-zinc-400 mb-4">Le serveur récupère les parties toutes les 30 min, même si personne n'a le site ouvert. La clé Riot de développement expire 24 h après sa création : colle la nouvelle ici chaque jour. Elle est stockée chiffrée.</p>
+                    <div className="text-sm text-zinc-300 space-y-1 mb-4">
+                        <div>Clé : {savedAt ? (left > 0 ? <span className="text-emerald-400">enregistrée le {fmt(savedAt)}, expire vers {fmt(expires)} ({Math.floor(left / 3600000)} h {Math.floor(left % 3600000 / 60000)} min)</span> : <span className="text-red-400">probablement expirée (enregistrée le {fmt(savedAt)})</span>) : <span className="text-amber-400">aucune clé enregistrée</span>}</div>
+                        <div>Dernière synchro : {config?.lastServerSync ? `${fmt(config.lastServerSync)} · ${config.syncReport || ''}` : 'jamais'}</div>
+                        {config?.syncError && <div className="text-red-400 font-bold">⚠️ {config.syncError}</div>}
+                    </div>
+                    <div className="flex flex-col sm:flex-row gap-2">
+                        <input type="password" value={key} onChange={e => setKey(e.target.value)} placeholder="RGAPI-…" className="flex-1 bg-zinc-950 border border-zinc-700 rounded-xl px-3 py-2 text-sm text-white font-mono" />
+                        <button disabled={busy || !key.trim()} onClick={() => saveKey(key)} className="bg-zinc-100 hover:bg-white text-zinc-900 font-heading font-bold px-4 py-2 rounded-xl disabled:opacity-40">Enregistrer la clé</button>
+                    </div>
+                    <div className="flex flex-wrap gap-2 mt-2">
+                        {localKey && <button disabled={busy} onClick={() => saveKey(localKey)} className="text-xs px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 disabled:opacity-40">Utiliser la clé déjà saisie plus bas</button>}
+                        <button disabled={busy || !savedAt} onClick={syncNow} className="text-xs px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 disabled:opacity-40">{busy ? 'En cours…' : 'Synchroniser maintenant (serveur)'}</button>
+                    </div>
+                    {msg && <p className={`text-xs mt-2 ${msg.ok ? 'text-emerald-400' : 'text-red-400'}`}>{msg.text}</p>}
+                </div>
+            );
+        };
+
         const ChallengeDatesEditor = ({ config, onUpdateConfig, onFinalizeNow, onReopen, final }) => {
             const [start, setStart] = useState(config?.challengeStart || '');
             const [end, setEnd] = useState(config?.challengeEnd || '');
@@ -2053,7 +2093,7 @@
             );
         };
 
-        const AdminPanel = ({ testMode, onToggleTestMode, players, matches, config, onUpdateConfig, pendingDoubles, onSetMatchLp, onAddPlayer, onUpdatePlayer, onSaveMatch, onRequestEdit, onRequestReset, onResetShop, viewPlayers, onNotify, onFinalize, onReopen }) => {
+        const AdminPanel = ({ testMode, onToggleTestMode, players, matches, config, onUpdateConfig, pendingDoubles, onSetMatchLp, onAddPlayer, onUpdatePlayer, onSaveMatch, onRequestEdit, onRequestReset, onResetShop, viewPlayers, onNotify, onFinalize, onReopen, adminPwd }) => {
             const [apiKey, setApiKey] = useState(() => { try { return localStorage.getItem('riotApiKey') || ''; } catch { return ''; } });
             const [status, setStatus] = useState('');
             const [loading, setLoading] = useState(false);
@@ -2342,6 +2382,8 @@
 
                     <OverlayHelper />
 
+                    <ServerSyncCard config={config} adminPwd={adminPwd} localKey={apiKey.trim()} />
+
                     <ChallengeDatesEditor config={config} onUpdateConfig={onUpdateConfig} onFinalizeNow={() => finalizeNow('manual')} onReopen={onReopen} final={parseJson(config?.finalJson).players ? parseJson(config?.finalJson) : null} />
 
                     <DuelsEditor config={config} players={players} viewPlayers={viewPlayers || players} onUpdateConfig={onUpdateConfig} />
@@ -2370,6 +2412,7 @@
             const [loginError, setLoginError] = useState('');
             const [showLogin, setShowLogin] = useState(false);
             const [pwd, setPwd] = useState('');
+            const [adminPwd, setAdminPwd] = useState('');
             const [toDelete, setToDelete] = useState(null);
             const [toEdit, setToEdit] = useState(null);
             const [history, setHistory] = useState([]);
@@ -2584,12 +2627,12 @@
                 .concat(purchases.filter(x => x.kind === 'jackpot').flatMap(x => (effects.statuses[x.id]?.verify || []).map(v => ({ id: `${x.id}_${v.matchDocId}`, buyerName: `Bonus ultime de ${x.buyerName} · partie de ${v.playerName} (estimée)`, matchDocId: v.matchDocId, win: false })))), [purchases, effects]);
 
             useEffect(() => {
-                if (!isAdmin || !players.length) return;
+                if (!user || !players.length) return;
                 const json = JSON.stringify(playersView.map(p => [p.id, p.lpDelta]));
                 if (parseJson(config?.standingsJson).key === json) return;
                 const t = setTimeout(() => { crud.updateConfig({ standingsJson: JSON.stringify({ key: json, at: Date.now() }) }).catch(() => {}); }, 5000);
                 return () => clearTimeout(t);
-            }, [isAdmin, playersView, config?.standingsJson]);
+            }, [user, playersView, config?.standingsJson]);
 
             const final = useMemo(() => { const f = parseJson(config?.finalJson); return f.players ? f : null; }, [config]);
             const [showFinale, setShowFinale] = useState(false);
@@ -2609,13 +2652,33 @@
                 const sorted = [...pv].sort((a, b) => (b.lpDelta || 0) - (a.lpDelta || 0));
                 const teams = { rouge: 0, bleu: 0 };
                 pv.forEach(p => { if (teams[p.team] !== undefined) teams[p.team] += Number(p.lpDelta) || 0; });
-                await crud.updateConfig({ ...(mode === 'auto' ? { autoClosedEnd: config?.challengeEnd || '' } : {}), finalJson: JSON.stringify({ mode, endAt: challengeWindow(config).end, finishedAt: Date.now(), winnerId: sorted[0]?.id || null, teams, players: sorted.map(p => ({ id: p.id, name: p.playerName, team: p.team || '', lp: p.lpDelta || 0, img: p.profileImg || '', rank: p.rankLabel || '' })) }) });
+                const cfgRef = doc(db, 'config', 'main');
+                const claimed = await runTransaction(db, async tx => {
+                    const snap = await tx.get(cfgRef);
+                    const cur = snap.exists() ? snap.data() : {};
+                    if (cur.finalJson) return false;
+                    if (mode === 'auto' && cur.autoClosedEnd === (cur.challengeEnd || '')) return false;
+                    tx.set(cfgRef, { ...(mode === 'auto' ? { autoClosedEnd: cur.challengeEnd || '' } : {}), finalJson: JSON.stringify({ mode, endAt: challengeWindow(config).end, finishedAt: Date.now(), winnerId: sorted[0]?.id || null, teams, players: sorted.map(p => ({ id: p.id, name: p.playerName, team: p.team || '', lp: p.lpDelta || 0, img: p.profileImg || '', rank: p.rankLabel || '' })) }) }, { merge: true });
+                    return true;
+                });
+                if (!claimed) return;
                 // Annonce du vainqueur dans le channel des récaps
                 try {
                     await fetch('/api/discord', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'final', buyerName: 'final', top: sorted.slice(0, 5).map(p => ({ name: p.playerName, lp: p.lpDelta || 0 })), teams }) });
                 } catch {}
             };
             const reopenChallenge = () => crud.updateConfig({ finalJson: '' });
+            const autoFinalTried = useRef('');
+            useEffect(() => {
+                if (!user || final || !config?.challengeEnd) return;
+                const end = challengeWindow(config).end;
+                if (!end || now < end || now - end > 24 * 3600 * 1000) return;
+                if (config.autoClosedEnd === config.challengeEnd) return;
+                if (!config.lastServerSync || config.lastServerSync < end) return; // attend une synchro serveur après la fin
+                if (autoFinalTried.current === config.challengeEnd) return;
+                autoFinalTried.current = config.challengeEnd;
+                finalizeChallenge('auto').catch(() => { autoFinalTried.current = ''; });
+            }, [user, final, config, now]);
 
             const stats = useMemo(() => {
                 const totalGames = playersView.reduce((acc, p) => acc + (p.wins || 0) + (p.losses || 0), 0);
@@ -2696,6 +2759,7 @@
                                 onResetShop={resetShopPoints}
                                 onFinalize={finalizeChallenge}
                                 onReopen={reopenChallenge}
+                                adminPwd={adminPwd}
                                 viewPlayers={playersView}
                                 onNotify={notifyDiscord}
                             />
@@ -2728,7 +2792,7 @@
                                     onClick={async () => {
                                         try {
                                             const r = await fetch('/api/admin-login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: pwd }) });
-                                            if (r.ok) { setIsAdmin(true); setShowLogin(false); setPwd(''); setLoginError(''); }
+                                            if (r.ok) { setIsAdmin(true); setAdminPwd(pwd); setShowLogin(false); setPwd(''); setLoginError(''); }
                                             else setLoginError(r.status === 401 ? 'Mot de passe incorrect.' : 'Connexion impossible, réessaie.');
                                         } catch { setLoginError('Connexion impossible, réessaie.'); }
                                     }} 

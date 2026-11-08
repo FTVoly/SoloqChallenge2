@@ -1,0 +1,12 @@
+name: Synchro SoloQ Challenge
+# Déclenche la synchro serveur toutes les 30 min (le serveur ignore l'appel si la dernière synchro a moins de 10 min)
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - run: curl -sS --max-time 90 https://soloq-challenge2.vercel.app/api/sync
