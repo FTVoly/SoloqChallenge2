@@ -2569,9 +2569,12 @@
             }, [history, matchesFinal]);
             // Classement = somme des LP maison des parties (depuis le dernier reset) + effets de la boutique
             const playersView = useMemo(() => players.map(p => {
-                const base = matchList.filter(m => m.playerId === p.id && gameStart(m) >= (p.lpResetAt || 0)).reduce((a, m) => a + m.lpChange, 0);
+                const ms = matchList.filter(m => m.playerId === p.id && gameStart(m) >= (p.lpResetAt || 0));
+                const base = ms.reduce((a, m) => a + m.lpChange, 0);
                 const adj = effects.lpAdjust[p.id]?.total || 0;
-                return { ...p, riotLpDelta: p.lpDelta || 0, lpBase: base, lpAdjust: adj, lpDelta: base + adj };
+                // Bilan V / D depuis le début du challenge (remakes exclus) ; le bilan Riot de la saison reste dans riotWins / riotLosses
+                const played = ms.filter(m => !isRemake(m));
+                return { ...p, riotWins: p.wins || 0, riotLosses: p.losses || 0, wins: played.filter(m => m.win).length, losses: played.filter(m => !m.win).length, riotLpDelta: p.lpDelta || 0, lpBase: base, lpAdjust: adj, lpDelta: base + adj };
             }), [players, matchList, effects]);
             const allStatuses = useMemo(() => ({ ...computeShop(players, matchList, purchases).statuses, ...effects.statuses }), [players, matchList, purchases, effects]);
             const prices = useMemo(() => pricesOf(config), [config]);
@@ -2615,9 +2618,9 @@
             const reopenChallenge = () => crud.updateConfig({ finalJson: '' });
 
             const stats = useMemo(() => {
-                const totalGames = players.reduce((acc, p) => acc + (p.wins || 0) + (p.losses || 0), 0);
-                return { totalGames, count: players.length };
-            }, [players]);
+                const totalGames = playersView.reduce((acc, p) => acc + (p.wins || 0) + (p.losses || 0), 0);
+                return { totalGames, count: playersView.length };
+            }, [playersView]);
 
             const overlayParams = new URLSearchParams(window.location.search);
             if (overlayParams.get('overlay')) return <Overlay players={playersView} purchases={purchases} duels={parseDuels(config)} view={overlayParams.get('view')} n={overlayParams.get('n')} scale={overlayParams.get('scale')} />;
