@@ -543,7 +543,7 @@
 
         const formatDuration = (sec) => `${Math.floor((sec || 0) / 60)} m ${String((sec || 0) % 60).padStart(2, '0')} s`;
 
-        const MatchRow = ({ h, player, version, shopFx = [] }) => {
+        const MatchRow = ({ h, player, version, shopFx = [], onToggleAutofill }) => {
             const win = !!h.win;
             const team = player?.team ?? h.team;
             const ddImg = (path) => `https://ddragon.leagueoflegends.com/cdn/${version}/img/${path}`;
@@ -609,6 +609,10 @@
                                 <div className={`text-xs font-bold mt-1 ${tone(lp)}`}>{isRemake(h) ? 'Remake · ' : ''}{formatLP(lp)} LP</div>
                             );
                         })()}
+                        {h.autofill && win && <div className="text-[10px] font-bold text-amber-300 mt-0.5">×2 autofill</div>}
+                        {onToggleAutofill && win && !isRemake(h) && (
+                            <button onClick={() => onToggleAutofill(h)} className={`mt-1 text-[10px] px-1.5 py-0.5 rounded border ${h.autofill ? 'border-amber-400/60 text-amber-300 bg-amber-500/10' : 'border-zinc-700 text-zinc-400 hover:text-zinc-200'}`}>{h.autofill ? 'Retirer ×2' : 'Autofill ×2'}</button>
+                        )}
                     </div>
 
                     {/* CS / vision */}
@@ -647,7 +651,7 @@
             );
         };
 
-        const HistoryView = ({ history, players, purchases = [], statuses = {} }) => {
+        const HistoryView = ({ history, players, purchases = [], statuses = {}, onToggleAutofill }) => {
             const [playerFilter, setPlayerFilter] = useState('all');
             const [teamFilter, setTeamFilter] = useState('all');
             const version = useDdragonVersion();
@@ -752,7 +756,7 @@
                                     </div>
                                 </div>
                                 {g.items.map(h => (
-                                    <MatchRow key={h.id} h={h} player={playerById[h.playerId]} version={version} shopFx={fxByMatch[h.id] || []} />
+                                    <MatchRow key={h.id} h={h} player={playerById[h.playerId]} version={version} shopFx={fxByMatch[h.id] || []} onToggleAutofill={onToggleAutofill} />
                                 ))}
                             </div>
                         ))}
@@ -853,7 +857,8 @@
         const challengeLp = (m, rule) => {
             if (isRemake(m)) return 0;
             const v = rule.min + (hashStr(`${m.matchId || m.id}_${m.playerId}`) % (rule.max - rule.min + 1));
-            return m.win ? v : -v;
+            // Victoire en autofill (bonus double LP de Riot), cochée par l'admin dans l'historique
+            return m.win ? (m.autofill ? 2 * v : v) : -v;
         };
 
         const JACKPOT_PCT = 25, JACKPOT_BONUS = 30; // bonus ultime : % des LP perdus par les autres + bonus si tout le monde gagne
@@ -2735,7 +2740,7 @@
                     <main className="max-w-7xl mx-auto px-4 py-8 flex-1 w-full">
                         {tab === 'classement' && <Leaderboard players={playersView} isAdmin={isAdmin} onRequestDelete={setToDelete} onRequestEdit={setToEdit} />}
                         {tab === 'joueurs' && <PlayersList players={playersView} />}
-                        {tab === 'historique' && <HistoryView history={historyView} players={playersView} purchases={purchases} statuses={allStatuses} />}
+                        {tab === 'historique' && <HistoryView history={historyView} players={playersView} purchases={purchases} statuses={allStatuses} onToggleAutofill={isAdmin ? (h => crud.updateHistoryDoc(h.id, { autofill: !h.autofill })) : null} />}
                         {tab === 'boutique' && <ShopView players={playersView} matches={matchList} purchases={purchases} effects={effects} prices={prices} config={config} onBuy={crud.buyItem} isAdmin={isAdmin} testMode={testMode} onCancel={crud.cancelPurchase} />}
                         {tab === 'duels' && <DuelsView duels={parseDuels(config)} players={playersView} />}
                         {tab === 'records' && <RecordsView players={playersView} matches={matchesFinal} />}
