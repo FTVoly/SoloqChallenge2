@@ -598,7 +598,8 @@
                             {h.kills} <span className="text-zinc-500">/</span> <span className="text-red-400">{h.deaths}</span> <span className="text-zinc-500">/</span> {h.assists}
                         </div>
                         <div className="text-xs text-zinc-400">{ratio} KDA</div>
-                        {lp !== null && lp !== undefined && (() => {
+                        {h.uncounted && <div className="text-[10px] font-bold text-zinc-400 mt-1" title="Au-delà de la limite de parties comptées">Non comptée</div>}
+                        {!h.uncounted && lp !== null && lp !== undefined && (() => {
                             const fin = typeof h.lpFinal === 'number' ? h.lpFinal : lp;
                             const tone = (v) => v > 0 ? 'text-emerald-400' : v < 0 ? 'text-red-400' : 'text-zinc-400';
                             return fin !== lp ? (
@@ -610,7 +611,7 @@
                             );
                         })()}
                         {h.autofill && win && <div className="text-[10px] font-bold text-amber-300 mt-0.5">×2 autofill</div>}
-                        {onToggleAutofill && win && !isRemake(h) && (
+                        {onToggleAutofill && win && !isRemake(h) && !h.uncounted && (
                             <button onClick={() => onToggleAutofill(h)} className={`mt-1 text-[10px] px-1.5 py-0.5 rounded border ${h.autofill ? 'border-amber-400/60 text-amber-300 bg-amber-500/10' : 'border-zinc-700 text-zinc-400 hover:text-zinc-200'}`}>{h.autofill ? 'Retirer ×2' : 'Autofill ×2'}</button>
                         )}
                     </div>
@@ -1471,6 +1472,27 @@
         const inWindow = (m, w) => { const g = gameStart(m); return (w.start == null || g >= w.start) && (w.end == null || g <= w.end); };
         const fmtParis = (ms) => new Date(ms).toLocaleString('fr-FR', { timeZone: 'Europe/Paris', weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
 
+        // ---------- Limite de parties comptées (ex. « les 35 premières parties de chaque joueur, jusqu'à samedi ») ----------
+        const capOf = (config, now) => {
+            const max = Math.round(Number(config?.capGames) || 0);
+            const until = parisToMs(config?.capUntil);
+            const active = !!config?.capOn && max > 0 && (until == null || now < until);
+            return { max, until, active, on: !!config?.capOn };
+        };
+        // Marque `uncounted` les parties au-delà de la limite, joueur par joueur, dans l'ordre chronologique (depuis son dernier reset ; remakes ignorés)
+        const applyCap = (matches, cap, players) => {
+            if (!cap.active) return matches;
+            const resetAt = Object.fromEntries(players.map(p => [p.id, p.lpResetAt || 0]));
+            const seen = {};
+            const over = new Set();
+            [...matches].sort((a, b) => gameStart(a) - gameStart(b)).forEach(m => {
+                if (isRemake(m) || gameStart(m) < (resetAt[m.playerId] || 0)) return;
+                seen[m.playerId] = (seen[m.playerId] || 0) + 1;
+                if (seen[m.playerId] > cap.max) over.add(m.id);
+            });
+            return matches.map(m => over.has(m.id) ? { ...m, uncounted: true } : m);
+        };
+
         const ChallengeBanner = ({ config, final, now, onShowFinale }) => {
             const w = challengeWindow(config);
             if (!w.start && !w.end && !final) return null;
@@ -1556,6 +1578,50 @@
                         <button disabled={busy || !savedAt} onClick={syncNow} className="text-xs px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 disabled:opacity-40">{busy ? 'En cours…' : 'Synchroniser maintenant (serveur)'}</button>
                     </div>
                     {msg && <p className={`text-xs mt-2 ${msg.ok ? 'text-emerald-400' : 'text-red-400'}`}>{msg.text}</p>}
+                </div>
+            );
+        };
+
+        const GameCapEditor = ({ config, players, matches, onUpdateConfig }) => {
+            const [max, setMax] = useState(config?.capGames || 35);
+            const [until, setUntil] = useState(config?.capUntil || '');
+            const [err, setErr] = useState('');
+            const [saved, setSaved] = useState(false);
+            useEffect(() => { setMax(config?.capGames || 35); setUntil(config?.capUntil || ''); }, [config?.capGames, config?.capUntil]);
+            const cap = capOf(config, Date.now());
+            const save = async () => {
+                const n = Math.round(Number(max));
+                const u = parisToMs(until);
+                if (!(n > 0)) return setErr('Mets un nombre de parties supérieur à 0.');
+                if (until && (u == null || new Date(u).getUTCFullYear() < 2024 || new Date(u).getUTCFullYear() > 2100)) return setErr('Date invalide (vérifie l\'année).');
+                if (u != null && u <= Date.now() && !window.confirm('Cette date est déjà passée : la limite sera sans effet. Enregistrer quand même ?')) return;
+                setErr('');
+                await onUpdateConfig({ capGames: n, capUntil: until, capOn: true });
+                setSaved(true); setTimeout(() => setSaved(false), 2000);
+            };
+            const counts = (() => {
+                const c = {};
+                (matches || []).forEach(m => { if (!isRemake(m) && !m.uncounted) c[m.playerId] = (c[m.playerId] || 0) + 1; });
+                return c;
+            })();
+            const cls = 'bg-zinc-950 border border-zinc-700 rounded-xl px-3 py-2 text-sm text-white';
+            return (
+                <div className={`bg-zinc-900 p-6 rounded-2xl border ${cap.active ? 'border-amber-500/40' : 'border-zinc-800'}`}>
+                    <h3 className="font-heading text-xl font-bold text-white flex items-center gap-2 mb-1"><Gamepad2 className="text-zinc-400" /> Limite de parties comptées</h3>
+                    <p className="text-xs text-zinc-400 mb-4">Seules les N premières parties de chaque joueur comptent (classement, LP, points de la boutique, records, stats). Les suivantes restent visibles dans l'historique, marquées « Non comptée ». La limite s'arrête toute seule à la date indiquée, ou quand tu l'annules : toutes les parties comptent alors immédiatement. Le comptage repart à zéro si tu réinitialises les LP d'un joueur ; les remakes ne comptent pas.</p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+                        <label className="text-xs text-zinc-400">Parties comptées par joueur<input type="number" min="1" value={max} onChange={e => setMax(e.target.value)} className={cls + ' w-full mt-1'} /></label>
+                        <label className="text-xs text-zinc-400">Jusqu'au (heure de Paris, vide = jusqu'à annulation)<input type="datetime-local" value={until} onChange={e => setUntil(e.target.value)} className={cls + ' w-full mt-1'} /></label>
+                    </div>
+                    {err && <p className="text-xs text-red-400 mb-2">{err}</p>}
+                    <div className="flex flex-wrap gap-2">
+                        <button onClick={save} className="flex-1 bg-zinc-100 hover:bg-white text-zinc-900 font-heading font-bold py-2.5 rounded-xl transition">{saved ? 'Enregistré ✓' : (cap.on ? 'Mettre à jour la limite' : 'Activer la limite')}</button>
+                        {cap.on && <button onClick={() => { if (window.confirm('Annuler la limite ? Toutes les parties compteront immédiatement.')) onUpdateConfig({ capOn: false }); }} className="px-4 py-2.5 rounded-xl text-sm font-bold bg-red-500/15 hover:bg-red-500/25 text-red-300 border border-red-500/30">Annuler la limite</button>}
+                    </div>
+                    <p className={`text-xs mt-3 ${cap.active ? 'text-amber-300' : 'text-zinc-500'}`}>
+                        {cap.active ? `Limite active : ${cap.max} parties comptées par joueur${cap.until ? `, jusqu'au ${fmtParis(cap.until)}` : ''}.` : cap.on ? 'La limite est terminée (date dépassée) : toutes les parties comptent.' : 'Aucune limite : toutes les parties comptent.'}
+                    </p>
+                    {cap.active && players.length > 0 && <div className="flex flex-wrap gap-2 mt-3">{players.map(p => <span key={p.id} className="text-xs px-2 py-1 rounded-lg bg-zinc-800 text-zinc-300">{p.playerName} <b className={(counts[p.id] || 0) >= cap.max ? 'text-amber-300' : 'text-white'}>{counts[p.id] || 0}/{cap.max}</b></span>)}</div>}
                 </div>
             );
         };
@@ -2098,7 +2164,7 @@
             );
         };
 
-        const AdminPanel = ({ testMode, onToggleTestMode, players, matches, config, onUpdateConfig, pendingDoubles, onSetMatchLp, onAddPlayer, onUpdatePlayer, onSaveMatch, onRequestEdit, onRequestReset, onResetShop, viewPlayers, onNotify, onFinalize, onReopen, adminPwd }) => {
+        const AdminPanel = ({ testMode, onToggleTestMode, players, matches, config, onUpdateConfig, pendingDoubles, onSetMatchLp, onAddPlayer, onUpdatePlayer, onSaveMatch, onRequestEdit, onRequestReset, onResetShop, viewPlayers, onNotify, onFinalize, onReopen, adminPwd, countedMatches }) => {
             const [apiKey, setApiKey] = useState(() => { try { return localStorage.getItem('riotApiKey') || ''; } catch { return ''; } });
             const [status, setStatus] = useState('');
             const [loading, setLoading] = useState(false);
@@ -2389,6 +2455,8 @@
 
                     <ServerSyncCard config={config} adminPwd={adminPwd} localKey={apiKey.trim()} />
 
+                    <GameCapEditor config={config} players={players} matches={countedMatches} onUpdateConfig={onUpdateConfig} />
+
                     <ChallengeDatesEditor config={config} onUpdateConfig={onUpdateConfig} onFinalizeNow={() => finalizeNow('manual')} onReopen={onReopen} final={parseJson(config?.finalJson).players ? parseJson(config?.finalJson) : null} />
 
                     <DuelsEditor config={config} players={players} viewPlayers={viewPlayers || players} onUpdateConfig={onUpdateConfig} />
@@ -2606,15 +2674,20 @@
             const lpRule = useMemo(() => lpRuleOf(config), [config]);
             // LP du challenge = barème maison (les LP Riot sont gardés dans riotLp, pour info)
             const score = (m) => ({ ...m, riotLp: m.lpChange, lpChange: challengeLp(m, lpRule), lpEstimated: false });
-            const matchList = useMemo(() => rawMatchList.filter(m => inWindow(m, challengeWin)).map(score), [rawMatchList, challengeWin, lpRule]);
+            const [now, setNow] = useState(Date.now());
+            useEffect(() => { const t = setInterval(() => setNow(Date.now()), 30000); return () => clearInterval(t); }, []);
+            const cap = useMemo(() => capOf(config, now), [config, now]);
+            const windowed = useMemo(() => applyCap(rawMatchList.filter(m => inWindow(m, challengeWin)).map(score), cap, players), [rawMatchList, challengeWin, lpRule, cap, players]);
+            const matchList = useMemo(() => windowed.filter(m => !m.uncounted), [windowed]);
             const effects = useMemo(() => computeEffects(players, matchList, purchases), [players, matchList, purchases]);
             // LP finaux de chaque partie = barème + effets de la boutique sur cette partie (quitte ou double, bouclier, sanction)
             const finalOf = (m) => ({ ...m, lpFinal: m.lpChange + (effects.gameAdj[m.id] || 0) });
             const matchesFinal = useMemo(() => matchList.map(finalOf), [matchList, effects]);
             const historyView = useMemo(() => {
                 const byId = Object.fromEntries(matchesFinal.map(m => [m.id, m]));
+                windowed.filter(m => m.uncounted).forEach(m => { byId[m.id] = m; });
                 return history.filter(h => h.type !== 'match' || byId[h.id]).map(h => h.type === 'match' ? byId[h.id] : h);
-            }, [history, matchesFinal]);
+            }, [history, matchesFinal, windowed]);
             // Classement = somme des LP maison des parties (depuis le dernier reset) + effets de la boutique
             const playersView = useMemo(() => players.map(p => {
                 const ms = matchList.filter(m => m.playerId === p.id && gameStart(m) >= (p.lpResetAt || 0));
@@ -2646,8 +2719,6 @@
                 try { if (localStorage.getItem('finaleSeen') !== String(final.finishedAt)) setShowFinale(true); } catch { setShowFinale(true); }
             }, [final?.finishedAt]);
             const closeFinale = () => { setShowFinale(false); try { localStorage.setItem('finaleSeen', String(final?.finishedAt)); } catch {} };
-            const [now, setNow] = useState(Date.now());
-            useEffect(() => { const t = setInterval(() => setNow(Date.now()), 30000); return () => clearInterval(t); }, []);
             const playersViewRef = useRef(playersView);
             playersViewRef.current = playersView;
             // Refresh final : fige le classement (individuel et par équipe) pour l'animation du vainqueur
@@ -2752,6 +2823,7 @@
                                 onAddPlayer={crud.add}
                                 onUpdatePlayer={crud.update}
                                 matches={rawMatchList}
+                                countedMatches={matchList}
                                 onSaveMatch={crud.saveMatch}
                                 config={config}
                                 onUpdateConfig={crud.updateConfig}
