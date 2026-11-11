@@ -782,7 +782,7 @@
         }[x.kind] || 'achat');
 
         // Calcule les points de chaque joueur + le statut de chaque achat, uniquement à partir des parties et des achats enregistrés
-        const computeShop = (players, matches, purchases) => {
+        const computeShop = (players, matches, purchases, bets = []) => {
             const startOf = (m) => m.gameCreation || ((m.timestamp || 0) - (m.duration || 0) * 1000);
             const gamesOf = (playerId) => matches
                 .filter(m => m.playerId === playerId)
@@ -804,10 +804,14 @@
                 });
 
                 const spent = mine.reduce((acc, x) => acc + (x.price || 0), 0);
+                // Paris du showmatch : la mise est retirée tout de suite, le gain (mise × cote) est crédité quand l'organisateur valide le résultat
+                const myBets = bets.filter(b => !b.test && b.playerId === pl.id && (b.timestamp || 0) >= since);
+                const staked = myBets.reduce((a, b) => a + (b.stake || 0), 0);
+                const betWon = myBets.reduce((a, b) => a + (b.status === 'won' ? (b.payout || 0) : b.status === 'void' ? (b.stake || 0) : 0), 0);
                 const earned = kills * POINTS.kill + wins * POINTS.win - penalty;
                 byPlayer[pl.id] = {
-                    games: ms.length, kills, wins, penalty, spent, earned,
-                    balance: earned - spent
+                    games: ms.length, kills, wins, penalty, spent, earned, staked, betWon,
+                    balance: earned - spent - staked + betWon
                 };
             });
 
@@ -1088,7 +1092,76 @@
             </div>
         );
 
-        const ShopView = ({ players, matches, purchases, effects, prices, config, onBuy, isAdmin, testMode, onCancel }) => {
+        const ShowmatchCard = ({ config, bets, players, buyer, balance, free, isAdmin, onBet, onDeleteBet }) => {
+            const show = parseJson(config?.showJson);
+            const [side, setSide] = useState('');
+            const [stake, setStake] = useState('');
+            const [msg, setMsg] = useState(null);
+            const [busy, setBusy] = useState(false);
+            if (!show.id) return null;
+            const odds = Number(show.odds) || 1.4;
+            const list = bets.filter(b => b.showId === show.id && !b.test).sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+            const mine = buyer ? list.find(b => b.playerId === buyer.id) : null;
+            const stakeN = Math.floor(Number(stake)) || 0;
+            const total = (sd) => list.filter(b => b.side === sd).reduce((a, b) => a + b.stake, 0);
+            const place = async () => {
+                setMsg(null);
+                if (!buyer) return setMsg({ ok: false, text: 'Choisis d\'abord ton pseudo plus haut.' });
+                if (!side) return setMsg({ ok: false, text: 'Choisis une équipe.' });
+                if (!(stakeN >= 1)) return setMsg({ ok: false, text: 'Indique une mise (minimum 1 point).' });
+                if (!free && stakeN > balance) return setMsg({ ok: false, text: `Tu n'as que ${balance} points.` });
+                if (show.maxStake && stakeN > show.maxStake) return setMsg({ ok: false, text: `Mise maximale : ${show.maxStake} points.` });
+                setBusy(true);
+                try { await onBet({ player: buyer, side, stake: stakeN, test: free }); setMsg({ ok: true, text: `Pari enregistré : ${stakeN} pts sur ${TEAMS[side].short} (gain possible : ${Math.round(stakeN * odds)} pts).` }); setStake(''); }
+                catch (e) { setMsg({ ok: false, text: e.message }); } finally { setBusy(false); }
+            };
+            const resultLabel = show.result === 'void' ? 'Showmatch annulé : mises remboursées.' : show.result ? `Victoire de ${TEAMS[show.result].label}` : null;
+            return (
+                <div className="rounded-2xl border border-amber-500/30 bg-amber-500/5 p-5 space-y-4">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="font-heading font-bold text-white flex items-center gap-2"><Swords size={18} className="text-amber-300" /> {show.title || 'Showmatch'} · paris</div>
+                        <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${show.open ? 'bg-emerald-500/15 text-emerald-300' : 'bg-zinc-800 text-zinc-400'}`}>{show.open ? 'Paris ouverts' : resultLabel ? 'Terminé' : 'Paris fermés'}</span>
+                    </div>
+                    <p className="text-xs text-zinc-400">Mise des points de la boutique sur l'équipe qui va gagner. <b className="text-zinc-200">Cote {odds.toString().replace('.', ',')}</b> sur les deux équipes : si ton équipe gagne, tu récupères <b className="text-zinc-200">ta mise × {odds.toString().replace('.', ',')}</b>, sinon la mise est perdue. Un seul pari par joueur, non modifiable{show.maxStake ? `, mise max ${show.maxStake} pts` : ''}.</p>
+                    {resultLabel && <div className="text-sm font-bold text-amber-200">🏁 {resultLabel}</div>}
+                    {show.open && (mine ? (
+                        <div className="text-sm rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-3 text-zinc-200">Ton pari : <b>{mine.stake} pts</b> sur <b className={TEAMS[mine.side].text}>{TEAMS[mine.side].label}</b> → gain possible <b>{Math.round(mine.stake * mine.odds)} pts</b></div>
+                    ) : (
+                        <div className="space-y-3">
+                            <div className="grid grid-cols-2 gap-3">
+                                {['rouge', 'bleu'].map(sd => (
+                                    <button key={sd} onClick={() => setSide(sd)} className={`rounded-xl border px-3 py-3 text-sm font-bold transition ${side === sd ? `${TEAMS[sd].border} ${TEAMS[sd].bg} ${TEAMS[sd].text}` : 'border-zinc-700 bg-zinc-900 text-zinc-300 hover:border-zinc-500'}`}>{TEAMS[sd].label}<div className="text-xs font-normal opacity-80">cote {odds.toString().replace('.', ',')}</div></button>
+                                ))}
+                            </div>
+                            <div className="flex gap-2">
+                                <input type="number" min="1" value={stake} onChange={e => setStake(e.target.value)} placeholder="Mise (points)" className="flex-1 bg-zinc-950 border border-zinc-700 rounded-xl px-3 py-2.5 text-sm text-white" />
+                                <button disabled={busy} onClick={place} className="bg-amber-400 hover:bg-amber-300 text-zinc-900 font-heading font-bold px-5 rounded-xl disabled:opacity-50">{busy ? '…' : 'Parier'}</button>
+                            </div>
+                            {stakeN >= 1 && side && <div className="text-xs text-zinc-400">Gain si {TEAMS[side].short} gagne : <b className="text-zinc-200">{Math.round(stakeN * odds)} pts</b> (+{Math.round(stakeN * odds) - stakeN})</div>}
+                        </div>
+                    ))}
+                    {msg && <p className={`text-xs ${msg.ok ? 'text-emerald-400' : 'text-red-400'}`}>{msg.text}</p>}
+                    {list.length > 0 && (
+                        <div>
+                            <div className="text-xs text-zinc-500 mb-2">{list.length} pari{list.length > 1 ? 's' : ''} · <span className={TEAMS.rouge.text}>Rouge {total('rouge')} pts</span> · <span className={TEAMS.bleu.text}>Bleu {total('bleu')} pts</span></div>
+                            <div className="space-y-1">
+                                {list.map(b => (
+                                    <div key={b.id} className="flex items-center justify-between text-xs rounded-lg bg-zinc-900/70 border border-zinc-800 px-3 py-1.5">
+                                        <span className="text-zinc-300"><b>{b.playerName}</b> · {b.stake} pts sur <span className={TEAMS[b.side].text}>{TEAMS[b.side].short}</span></span>
+                                        <span className="flex items-center gap-2">
+                                            <span className={b.status === 'won' ? 'text-emerald-400 font-bold' : b.status === 'lost' ? 'text-red-400' : b.status === 'void' ? 'text-zinc-400' : 'text-zinc-500'}>{b.status === 'won' ? `+${b.payout} pts` : b.status === 'lost' ? `−${b.stake} pts` : b.status === 'void' ? 'remboursé' : 'en attente'}</span>
+                                            {isAdmin && <button onClick={() => { if (window.confirm(`Supprimer le pari de ${b.playerName} ? La mise est remboursée.`)) onDeleteBet(b); }} className="text-zinc-500 hover:text-red-400"><Trash2 size={12} /></button>}
+                                        </span>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        const ShopView = ({ players, matches, purchases, effects, prices, config, onBuy, isAdmin, testMode, onCancel, bets = [], onBet, onDeleteBet }) => {
             const version = useDdragonVersion();
             const [buyerId, setBuyerId] = useState(() => { try { return localStorage.getItem('shopBuyer') || ''; } catch { return ''; } });
             const [targetId, setTargetId] = useState('');
@@ -1108,7 +1181,7 @@
                 return () => { alive = false; };
             }, [version]);
 
-            const shop = useMemo(() => computeShop(players, matches, purchases), [players, matches, purchases]);
+            const shop = useMemo(() => computeShop(players, matches, purchases, bets), [players, matches, purchases, bets]);
             const byPlayer = shop.byPlayer;
             const statuses = useMemo(() => ({ ...shop.statuses, ...effects.statuses }), [shop, effects]);
             const board = useMemo(() => [...players].sort((a, b) => (byPlayer[b.id]?.balance ?? 0) - (byPlayer[a.id]?.balance ?? 0)), [players, byPlayer]);
@@ -1246,6 +1319,7 @@
                                 </div>
                             )}
                         </div>
+                        <ShowmatchCard config={config} bets={bets} players={players} buyer={buyer} balance={balance} free={free} isAdmin={isAdmin} onBet={onBet} onDeleteBet={onDeleteBet} />
                         <p className="text-xs text-zinc-500">Limites par défaut : <b className="text-zinc-300">1 bonus</b> et <b className="text-zinc-300">1 malus</b> par jour (remise à zéro à minuit, heure de Paris), coup de ±{LPMOVE_LP} LP une seule fois. L'organisateur peut les modifier, y compris par joueur.</p>
 
                         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -1622,6 +1696,48 @@
                         {cap.active ? `Limite active : ${cap.max} parties comptées par joueur${cap.until ? `, jusqu'au ${fmtParis(cap.until)}` : ''}.` : cap.on ? 'La limite est terminée (date dépassée) : toutes les parties comptent.' : 'Aucune limite : toutes les parties comptent.'}
                     </p>
                     {cap.active && players.length > 0 && <div className="flex flex-wrap gap-2 mt-3">{players.map(p => <span key={p.id} className="text-xs px-2 py-1 rounded-lg bg-zinc-800 text-zinc-300">{p.playerName} <b className={(counts[p.id] || 0) >= cap.max ? 'text-amber-300' : 'text-white'}>{counts[p.id] || 0}/{cap.max}</b></span>)}</div>}
+                </div>
+            );
+        };
+
+        const ShowmatchAdmin = ({ config, bets, onUpdateConfig, onSettle }) => {
+            const show = parseJson(config?.showJson);
+            const [title, setTitle] = useState(show.title || 'Showmatch Rouge vs Bleu');
+            const [odds, setOdds] = useState(show.odds || 1.4);
+            const [maxStake, setMaxStake] = useState(show.maxStake || '');
+            const [busy, setBusy] = useState(false);
+            const save = (patch) => onUpdateConfig({ showJson: JSON.stringify({ ...show, ...patch }) });
+            const create = async () => {
+                const o = Number(String(odds).replace(',', '.'));
+                if (!(o > 1)) return alert('La cote doit être supérieure à 1.');
+                if (show.id && !window.confirm('Créer un nouveau showmatch ? Les paris actuels restent enregistrés et réglés, mais la carte affichera le nouveau.')) return;
+                await onUpdateConfig({ showJson: JSON.stringify({ id: `sm${Date.now()}`, title: title.trim() || 'Showmatch', odds: o, maxStake: Math.max(0, Math.floor(Number(maxStake)) || 0), open: true, result: '' }) });
+            };
+            const settle = async (r) => { setBusy(true); try { await onSettle(r); } finally { setBusy(false); } };
+            const list = bets.filter(b => b.showId === show.id && !b.test);
+            const cls = 'bg-zinc-950 border border-zinc-700 rounded-xl px-3 py-2 text-sm text-white';
+            return (
+                <div className="bg-zinc-900 p-6 rounded-2xl border border-zinc-800">
+                    <h3 className="font-heading text-xl font-bold text-white flex items-center gap-2 mb-1"><Swords className="text-zinc-400" /> Showmatch · paris</h3>
+                    <p className="text-xs text-zinc-400 mb-4">Les joueurs parient des points de la boutique sur Rouge ou Bleu (cote identique des deux côtés). Ferme les paris avant le début, puis indique l'équipe gagnante : les gains sont crédités tout de suite. Tu peux corriger le résultat ensuite.</p>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-3">
+                        <label className="text-xs text-zinc-400 sm:col-span-3">Titre<input value={title} onChange={e => setTitle(e.target.value)} className={cls + ' w-full mt-1'} /></label>
+                        <label className="text-xs text-zinc-400">Cote<input value={odds} onChange={e => setOdds(e.target.value)} className={cls + ' w-full mt-1'} /></label>
+                        <label className="text-xs text-zinc-400">Mise max (vide = aucune)<input type="number" min="0" value={maxStake} onChange={e => setMaxStake(e.target.value)} className={cls + ' w-full mt-1'} /></label>
+                        <div className="flex items-end"><button onClick={create} className="w-full bg-zinc-100 hover:bg-white text-zinc-900 font-heading font-bold py-2 rounded-xl">{show.id ? 'Nouveau showmatch' : 'Ouvrir les paris'}</button></div>
+                    </div>
+                    {show.id && (
+                        <div className="border-t border-zinc-800 pt-4 space-y-3">
+                            <div className="text-sm text-zinc-300"><b>{show.title}</b> · cote {String(show.odds).replace('.', ',')} · {list.length} pari{list.length > 1 ? 's' : ''} · {list.reduce((a, b) => a + b.stake, 0)} pts misés · <span className={show.open ? 'text-emerald-400' : 'text-zinc-400'}>{show.open ? 'ouverts' : 'fermés'}</span>{show.result ? ` · résultat : ${show.result === 'void' ? 'annulé' : TEAMS[show.result].short}` : ''}</div>
+                            <div className="flex flex-wrap gap-2">
+                                <button onClick={() => save({ open: !show.open })} className={`px-3 py-2 rounded-xl text-sm font-bold ${show.open ? 'bg-red-500/15 text-red-300 border border-red-500/30' : 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'}`}>{show.open ? 'Fermer les paris' : 'Rouvrir les paris'}</button>
+                                <button disabled={busy} onClick={() => window.confirm('Rouge a gagné ? Les gains sont crédités maintenant.') && settle('rouge')} className="px-3 py-2 rounded-xl text-sm font-bold bg-red-500/15 text-red-300 border border-red-500/30 disabled:opacity-40">🔴 Rouge gagne</button>
+                                <button disabled={busy} onClick={() => window.confirm('Bleu a gagné ? Les gains sont crédités maintenant.') && settle('bleu')} className="px-3 py-2 rounded-xl text-sm font-bold bg-blue-500/15 text-blue-300 border border-blue-500/30 disabled:opacity-40">🔵 Bleu gagne</button>
+                                <button disabled={busy} onClick={() => window.confirm('Annuler le showmatch ? Toutes les mises sont remboursées.') && settle('void')} className="px-3 py-2 rounded-xl text-sm font-bold bg-zinc-800 text-zinc-200 disabled:opacity-40">Annuler (rembourser)</button>
+                                {show.result && <button disabled={busy} onClick={() => settle('')} className="px-3 py-2 rounded-xl text-sm bg-zinc-800 text-zinc-300 disabled:opacity-40">Retirer le résultat</button>}
+                            </div>
+                        </div>
+                    )}
                 </div>
             );
         };
@@ -2164,7 +2280,7 @@
             );
         };
 
-        const AdminPanel = ({ testMode, onToggleTestMode, players, matches, config, onUpdateConfig, pendingDoubles, onSetMatchLp, onAddPlayer, onUpdatePlayer, onSaveMatch, onRequestEdit, onRequestReset, onResetShop, viewPlayers, onNotify, onFinalize, onReopen, adminPwd, countedMatches }) => {
+        const AdminPanel = ({ testMode, onToggleTestMode, players, matches, config, onUpdateConfig, pendingDoubles, onSetMatchLp, onAddPlayer, onUpdatePlayer, onSaveMatch, onRequestEdit, onRequestReset, onResetShop, viewPlayers, onNotify, onFinalize, onReopen, adminPwd, countedMatches, bets = [], onSettleShow }) => {
             const [apiKey, setApiKey] = useState(() => { try { return localStorage.getItem('riotApiKey') || ''; } catch { return ''; } });
             const [status, setStatus] = useState('');
             const [loading, setLoading] = useState(false);
@@ -2455,6 +2571,8 @@
 
                     <ServerSyncCard config={config} adminPwd={adminPwd} localKey={apiKey.trim()} />
 
+                    <ShowmatchAdmin config={config} bets={bets} onUpdateConfig={onUpdateConfig} onSettle={onSettleShow} />
+
                     <GameCapEditor config={config} players={players} matches={countedMatches} onUpdateConfig={onUpdateConfig} />
 
                     <ChallengeDatesEditor config={config} onUpdateConfig={onUpdateConfig} onFinalizeNow={() => finalizeNow('manual')} onReopen={onReopen} final={parseJson(config?.finalJson).players ? parseJson(config?.finalJson) : null} />
@@ -2490,6 +2608,7 @@
             const [toEdit, setToEdit] = useState(null);
             const [history, setHistory] = useState([]);
             const [purchases, setPurchases] = useState([]);
+            const [bets, setBets] = useState([]);
             const [testMode, setTestMode] = useState(() => { try { return localStorage.getItem('shopTestMode') === '1'; } catch { return false; } });
             const toggleTestMode = (v) => { setTestMode(v); try { localStorage.setItem('shopTestMode', v ? '1' : '0'); } catch {} };
             const [showReset, setShowReset] = useState(false);
@@ -2524,7 +2643,12 @@
                     })),
                     err => console.error('Boutique :', err)
                 );
-                return () => { unsubP(); unsubC(); unsubH(); unsubS(); };
+                const unsubB = onSnapshot(
+                    query(collection(db, 'history'), where('type', '==', 'bet')),
+                    snap => setBets(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
+                    err => console.error('Paris :', err)
+                );
+                return () => { unsubP(); unsubC(); unsubH(); unsubS(); unsubB(); };
             }, [user]);
 
             // Alerte Discord (via /api/discord) : ne bloque jamais l'achat si elle échoue
@@ -2555,6 +2679,41 @@
             }, [user, players, history, purchases]);
 
             const crud = {
+                // Pari sur le showmatch : une seule mise par joueur et par showmatch, uniquement tant que les paris sont ouverts (vérifié dans la transaction)
+                placeBet: async ({ player, side, stake, test }) => {
+                    const cfgRef = doc(db, 'config', 'main');
+                    const now = Date.now();
+                    await runTransaction(db, async tx => {
+                        const cfg = (await tx.get(cfgRef)).data() || {};
+                        const show = parseJson(cfg.showJson);
+                        if (!show.id || !show.open) throw new Error('Les paris sont fermés.');
+                        if (!['rouge', 'bleu'].includes(side)) throw new Error('Choisis une équipe.');
+                        const n = Math.floor(Number(stake));
+                        if (!(n >= 1)) throw new Error('Mise invalide (minimum 1 point).');
+                        if (show.maxStake && n > show.maxStake) throw new Error(`Mise maximale : ${show.maxStake} points.`);
+                        const ref = test ? doc(collection(db, 'history')) : doc(db, 'history', `bet_${show.id}_${player.id}`);
+                        if (!test && (await tx.get(ref)).exists()) throw new Error('Tu as déjà parié sur ce showmatch.');
+                        const odds = Number(show.odds) || 1.4;
+                        tx.set(ref, { type: 'bet', showId: show.id, showTitle: show.title || 'Showmatch', playerId: player.id, playerName: player.playerName, side, stake: n, odds, status: 'pending', payout: 0, ...(test ? { test: true } : {}), timestamp: now });
+                    });
+                    const cfg = parseJson(config?.showJson);
+                    notifyDiscord({ kind: 'bet', buyerName: player.playerName, label: side, price: Math.floor(Number(stake)), mode: String(cfg.odds || 1.4), test: !!test });
+                },
+                deleteBet: async (b) => deleteDoc(doc(db, 'history', b.id)),
+                // Résultat du showmatch : calcule le gain de chaque pari (mise × cote), ou rembourse en cas d'annulation. Rejouable : corriger le résultat recalcule tout.
+                settleShow: async (result) => {
+                    const show = parseJson(config?.showJson);
+                    if (!show.id) return;
+                    const mine = bets.filter(b => b.showId === show.id && !b.test);
+                    const batch = writeBatch(db);
+                    mine.forEach(b => {
+                        const status = result === 'void' ? 'void' : result === '' ? 'pending' : (b.side === result ? 'won' : 'lost');
+                        batch.update(doc(db, 'history', b.id), { status, payout: status === 'won' ? Math.round(b.stake * (b.odds || 1.4)) : 0 });
+                    });
+                    batch.set(doc(db, 'config', 'main'), { showJson: JSON.stringify({ ...show, open: false, result }) }, { merge: true });
+                    await batch.commit();
+                    if (result) notifyDiscord({ kind: 'betresult', label: result, buyerName: show.title || 'Showmatch', price: mine.length, mode: String(mine.filter(b => b.side === result).length) });
+                },
                 add: async data => addDoc(collection(db, 'players'), data),
                 update: async (id, data) => updateDoc(doc(db, 'players', id), data),
                 del: async id => deleteDoc(doc(db, 'players', id)),
@@ -2812,7 +2971,7 @@
                         {tab === 'classement' && <Leaderboard players={playersView} isAdmin={isAdmin} onRequestDelete={setToDelete} onRequestEdit={setToEdit} />}
                         {tab === 'joueurs' && <PlayersList players={playersView} />}
                         {tab === 'historique' && <HistoryView history={historyView} players={playersView} purchases={purchases} statuses={allStatuses} onToggleAutofill={isAdmin ? (h => crud.updateHistoryDoc(h.id, { autofill: !h.autofill })) : null} />}
-                        {tab === 'boutique' && <ShopView players={playersView} matches={matchList} purchases={purchases} effects={effects} prices={prices} config={config} onBuy={crud.buyItem} isAdmin={isAdmin} testMode={testMode} onCancel={crud.cancelPurchase} />}
+                        {tab === 'boutique' && <ShopView bets={bets} onBet={crud.placeBet} onDeleteBet={crud.deleteBet} players={playersView} matches={matchList} purchases={purchases} effects={effects} prices={prices} config={config} onBuy={crud.buyItem} isAdmin={isAdmin} testMode={testMode} onCancel={crud.cancelPurchase} />}
                         {tab === 'duels' && <DuelsView duels={parseDuels(config)} players={playersView} />}
                         {tab === 'records' && <RecordsView players={playersView} matches={matchesFinal} />}
                         {tab === 'reglement' && <RulesView config={config} />}
@@ -2824,6 +2983,8 @@
                                 onUpdatePlayer={crud.update}
                                 matches={rawMatchList}
                                 countedMatches={matchList}
+                                bets={bets}
+                                onSettleShow={crud.settleShow}
                                 onSaveMatch={crud.saveMatch}
                                 config={config}
                                 onUpdateConfig={crud.updateConfig}

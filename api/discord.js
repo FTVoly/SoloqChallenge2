@@ -44,7 +44,7 @@ export default async function handler(req, res) {
     } catch (e) { return res.status(500).json({ error: e.message }); }
   }
 
-  if (!buyer || !['ban', 'shield', 'double', 'spells', 'lpmove', 'cancel', 'violation', 'jackpot', 'rank'].includes(kind)) {
+  if (!buyer || !['ban', 'shield', 'double', 'spells', 'lpmove', 'cancel', 'violation', 'jackpot', 'rank', 'bet', 'betresult'].includes(kind)) {
     return res.status(400).json({ error: 'Requête invalide' });
   }
 
@@ -52,6 +52,31 @@ export default async function handler(req, res) {
   const MALUS = 0xef4444; // rouge : malus sur un adversaire
   const label = String(body.label ?? '').slice(0, 80).replace(/[@`*_~|>\\]/g, '').trim();
   let embed;
+  if (kind === 'bet' || kind === 'betresult') {
+    const team = (t) => t === 'rouge' ? '🔴 Rouge' : t === 'bleu' ? '🔵 Bleue' : '';
+    const test = body.test === true ? 'TEST · ' : '';
+    embed = kind === 'bet' ? {
+      title: '🎰 Pari sur le showmatch',
+      description: `**${buyer}** mise **${price} pts** sur l'équipe **${team(label)}** (cote ${clean(body.mode)}).`,
+      color: 0xf59e0b,
+      footer: { text: `${test}Paris · SoloQ Challenge` },
+    } : label === 'void' ? {
+      title: '🏁 Showmatch annulé',
+      description: `**${buyer}** est annulé : les **${price}** mise(s) sont remboursées.`,
+      color: 0x71717a,
+      footer: { text: 'Paris · SoloQ Challenge' },
+    } : {
+      title: '🏁 Résultat du showmatch',
+      description: `**${team(label)}** remporte **${buyer}** !\n${price} pari(s) · **${clean(body.mode)}** gagnant(s) : gains crédités.`,
+      color: label === 'rouge' ? 0xef4444 : 0x3b82f6,
+      footer: { text: 'Paris · SoloQ Challenge' },
+    };
+    embed.timestamp = new Date().toISOString();
+    try {
+      const r = await fetch(webhookUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ embeds: [embed], allowed_mentions: { parse: [] } }) });
+      return r.ok ? res.status(200).json({ ok: true }) : res.status(502).json({ error: `Discord a répondu ${r.status}` });
+    } catch (e) { return res.status(500).json({ error: e.message }); }
+  }
   if (kind === 'rank') {
     const up = body.mode === 'up';
     embed = {
