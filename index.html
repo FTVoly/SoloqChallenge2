@@ -1188,6 +1188,10 @@
             const sortedPlayers = useMemo(() => [...players].sort((a, b) => (a.playerName || '').localeCompare(b.playerName || '')), [players]);
 
             const free = !!isAdmin && !!testMode; // mode test : points infinis, achats gratuits
+            // Achat admin « compté » : vrai achat (LP, points, bans, pénalités), mais sans vérifier solde, limites ni fermeture, et sans transaction
+            const [adminReal, setAdminReal] = useState(false);
+            const force = !!isAdmin && adminReal && !free;
+            const bypass = free || force;
             const buyer = players.find(p => p.id === buyerId);
             const target = players.find(p => p.id === targetId);
             const balance = buyer ? (byPlayer[buyer.id]?.balance ?? 0) : 0;
@@ -1195,12 +1199,12 @@
             const lim = useMemo(() => effLimits(config, buyerId), [config, buyerId]);
             const cnt = useMemo(() => countsFor(purchases, buyerId, today), [purchases, buyerId, today]);
             const reached = (max, n) => max !== null && max !== undefined && n >= max;
-            const slotUsed = (cat) => !free && !!buyer && reached(lim.cat(cat), cnt.cat[cat]);
-            const kindFull = (k) => !free && !!buyer && (reached(lim.kind(k, 'day'), cnt.kd[k] || 0) || reached(lim.kind(k, 'total'), cnt.kt[k] || 0));
+            const slotUsed = (cat) => !bypass && !!buyer && reached(lim.cat(cat), cnt.cat[cat]);
+            const kindFull = (k) => !bypass && !!buyer && (reached(lim.kind(k, 'day'), cnt.kd[k] || 0) || reached(lim.kind(k, 'total'), cnt.kt[k] || 0));
             const bonusUsed = slotUsed('bonus'), malusUsed = slotUsed('malus');
             const lpmoveUsed = kindFull('lpmove');
             const jackpotBuy = purchases.find(x => x.kind === 'jackpot' && !x.test);
-            const jackpotTaken = !free && !!jackpotBuy, jackpotOwner = jackpotBuy?.buyerName;
+            const jackpotTaken = !bypass && !!jackpotBuy, jackpotOwner = jackpotBuy?.buyerName;
             const fmtLim = (v) => (v === null || v === undefined) ? '∞' : v;
             const bannedToday = useMemo(() => new Set(free ? [] : purchases.filter(x => !x.test && x.kind === 'ban' && x.targetId === targetId && parisDay(x.createdAt) === today).map(x => x.championKey)), [purchases, targetId, today, free]);
             const visibleChamps = champs.filter(c => c.name.toLowerCase().includes(search.toLowerCase()));
@@ -1217,15 +1221,15 @@
                 const price = prices[kind];
                 const fail = (text) => setMsg({ ok: false, text });
                 const cw = challengeWindow(config);
-                if (!free && cw.end && Date.now() > cw.end) return fail('Le challenge est terminé : la boutique est fermée.');
-                if (!free && cw.start && Date.now() < cw.start) return fail('Le challenge n\'a pas encore commencé : la boutique ouvre au début.');
-                if (!free && config?.finalJson) return fail('Le challenge est terminé : la boutique est fermée.');
+                if (!bypass && cw.end && Date.now() > cw.end) return fail('Le challenge est terminé : la boutique est fermée.');
+                if (!bypass && cw.start && Date.now() < cw.start) return fail('Le challenge n\'a pas encore commencé : la boutique ouvre au début.');
+                if (!bypass && config?.finalJson) return fail('Le challenge est terminé : la boutique est fermée.');
                 if (!buyer) return fail('Choisis d\'abord qui tu es.');
                 if (cat === 'malus' && !target) return fail('Choisis d\'abord le joueur ciblé.');
                 if (kind === 'ban' && !champ) return fail('Choisis le champion à bannir.');
                 if (kindFull(kind)) return fail(`Tu as atteint la limite d'achats pour cet objet (${fmtLim(lim.kind(kind, 'day'))} par jour, ${fmtLim(lim.kind(kind, 'total'))} dans tout le challenge).`);
                 if (slotUsed(cat)) return fail(`Tu as atteint ta limite de ${fmtLim(lim.cat(cat))} ${cat}${lim.cat(cat) > 1 ? 's' : ''} par jour.`);
-                if (!free && balance < price) return fail(`Il te faut ${price} points (tu en as ${balance}).`);
+                if (!bypass && balance < price) return fail(`Il te faut ${price} points (tu en as ${balance}).`);
                 const label = {
                     shield: 'Acheter un bouclier',
                     double: 'Jouer quitte ou double sur ta prochaine partie',
@@ -1234,10 +1238,10 @@
                     jackpot: `Acheter le BONUS ULTIME (un seul joueur du tournoi peut l'avoir)`,
                     lpmove: mode === 'gain' ? `Gagner ${LPMOVE_LP} LP ` : `Faire perdre ${LPMOVE_LP} LP à ${target?.playerName}`
                 }[kind];
-                if (!window.confirm(`${label} ? (${free ? 'mode test : gratuit' : price + ' points'})`)) return;
+                if (!window.confirm(`${label} ? (${free ? 'mode test : gratuit' : force ? 'achat admin compté : ' + price + ' points' : price + ' points'})`)) return;
                 setBusy(true); setMsg(null);
                 try {
-                    await onBuy({ buyer, kind, mode, target: cat === 'malus' ? target : null, champ: kind === 'ban' ? champ : null, price: free ? 0 : price, test: free });
+                    await onBuy({ buyer, kind, mode, target: cat === 'malus' ? target : null, champ: kind === 'ban' ? champ : null, price: free ? 0 : price, test: free, force });
                     if (kind === 'ban') { setChamp(null); setShowChamps(false); }
                     setMsg({ ok: true, text: 'Achat effectué !' + (['shield', 'double'].includes(kind) ? ' Lance ta partie après cet achat.' : '') });
                 } catch (e) {
@@ -1304,6 +1308,12 @@
 
                     {/* Achats */}
                     <div className="bg-zinc-900 rounded-2xl border border-zinc-800 p-6 space-y-6">
+                        {isAdmin && !free && (
+                            <label className={`flex items-start gap-3 text-xs rounded-xl px-4 py-3 border cursor-pointer ${force ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-200' : 'border-zinc-700 bg-zinc-900 text-zinc-300'}`}>
+                                <input type="checkbox" checked={adminReal} onChange={e => setAdminReal(e.target.checked)} className="mt-0.5" />
+                                <span><b>Achat admin compté</b> : tu achètes pour le joueur choisi, c'est un vrai achat (points déduits, effets sur les LP, bans et pénalités appliqués), mais sans vérifier son solde, ses limites ni la fermeture de la boutique. Fonctionne même si les achats normaux plantent (quota Firebase). Annulable avec la corbeille.</span>
+                            </label>
+                        )}
                         {free && <div className="text-xs rounded-xl px-4 py-2.5 border border-amber-500/40 bg-amber-500/10 text-amber-200">Mode test activé : points infinis, achats gratuits et sans limite (marqués « TEST »). Les achats de test n'utilisent ni tes limites du jour ni les vrais bans, et ne modifient jamais les LP, ni de pénalité. Supprime-les avec la corbeille dans « Derniers achats ».</div>}
                         <div className="flex flex-col sm:flex-row sm:items-end gap-3 justify-between">
                             <label className="block text-xs text-zinc-400 flex-1 max-w-xs">Acheter en tant que
@@ -2727,7 +2737,7 @@
                 // -> points remboursés, effet supprimé, le joueur peut racheter ; un ban/coup de LP redevient disponible
                 cancelPurchase: async (x, label) => {
                     const day = x.day || parisDay(x.createdAt);
-                    if (x.test) await deleteDoc(doc(db, 'history', x.id)); // un achat de test n'a aucun compteur
+                    if (x.test || x.forced) await deleteDoc(doc(db, 'history', x.id)); // un achat de test ou d'admin n'a aucun compteur
                     else await runTransaction(db, async tx => {
                         const refs = [
                             doc(db, 'history', limitDocId(x)),
@@ -2748,24 +2758,25 @@
                 // Achat unique, vérifié dans une transaction (limites modifiables dans l'Admin, par défaut ou par joueur) :
                 //  - bonus / malus par jour, nombre d'achats par objet (par jour et sur tout le challenge) : des compteurs « limit »
                 //  - un même champion ne se banne qu'une fois par jour pour un joueur
-                buyItem: async ({ buyer, kind, mode, target, champ, price, test }) => {
+                buyItem: async ({ buyer, kind, mode, target, champ, price, test, force }) => {
                     const now = Date.now();
                     const day = parisDay(now);
                     const category = categoryOf(kind, mode);
                     const limitRef = doc(db, 'history', limitDocId({ buyerId: buyer.id, day, category }));
                     const kdRef = doc(db, 'history', `lcount_${buyer.id}_${day}_${kind}`);
                     const ktRef = doc(db, 'history', `ltotal_${buyer.id}_${kind}`);
-                    const purchaseRef = test ? doc(collection(db, 'history')) : kind === 'ban' ? doc(db, 'history', `ban_${target.id}_${champ.id}_${day}`) : kind === 'jackpot' ? doc(db, 'history', 'jackpot_global') : doc(collection(db, 'history'));
+                    const purchaseRef = (test || force) ? doc(collection(db, 'history')) : kind === 'ban' ? doc(db, 'history', `ban_${target.id}_${champ.id}_${day}`) : kind === 'jackpot' ? doc(db, 'history', 'jackpot_global') : doc(collection(db, 'history'));
                     const data = { type: 'purchase', kind, buyerId: buyer.id, buyerName: buyer.playerName, price, category, day, createdAt: serverTimestamp(), timestamp: now };
                     if (mode) data.mode = mode;
                     if (test) data.test = true;
+                    if (force) data.forced = true;
                     if (target) { data.targetId = target.id; data.targetName = target.playerName; }
                     if (champ) { data.championKey = champ.id; data.championName = champ.name; }
 
                     const cw = challengeWindow(config);
-                    if (!test && ((cw.end && now > cw.end) || (cw.start && now < cw.start) || config?.finalJson)) throw new Error('La boutique est fermée (hors période du challenge).');
-                    if (test) {
-                        // Mode test : aucune limite et aucun compteur, donc rien n'est consommé pour de vrai
+                    if (!test && !force && ((cw.end && now > cw.end) || (cw.start && now < cw.start) || config?.finalJson)) throw new Error('La boutique est fermée (hors période du challenge).');
+                    if (test || force) {
+                        // Mode test (ou achat admin compté) : écriture simple, aucune limite ni compteur
                         await setDoc(purchaseRef, data);
                     } else {
                         const lim = effLimits(config, buyer.id);
