@@ -61,13 +61,14 @@ export async function listDocs(headers, collection) {
   } while (token);
   return out;
 }
-// Identifiants des parties déjà enregistrées (sans télécharger tout l'historique)
-export async function knownMatches(headers) {
+// Identifiants des parties déjà enregistrées depuis `sinceMs` (on ne relit pas tout l'historique : ça brûle le quota gratuit de Firestore)
+export async function knownMatches(headers, sinceMs = 0) {
   const r = await fetch(`${BASE}:runQuery`, {
     method: 'POST', headers,
-    body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'history' }], where: { fieldFilter: { field: { fieldPath: 'type' }, op: 'EQUAL', value: { stringValue: 'match' } } }, select: { fields: [{ fieldPath: 'matchId' }, { fieldPath: 'playerId' }] } } }),
+    body: JSON.stringify({ structuredQuery: { from: [{ collectionId: 'history' }], ...(sinceMs > 0 ? { where: { fieldFilter: { field: { fieldPath: 'timestamp' }, op: 'GREATER_THAN_OR_EQUAL', value: { integerValue: String(Math.floor(sinceMs)) } } } } : {}), select: { fields: [{ fieldPath: 'type' }, { fieldPath: 'matchId' }, { fieldPath: 'playerId' }] } } }),
   }).then(r => r.json());
-  return new Set((Array.isArray(r) ? r : []).filter(x => x.document).map(x => { const d = plain(x.document); return `${d.matchId}_${d.playerId}`; }));
+  if (!Array.isArray(r)) throw new Error(r?.error?.message || 'Firestore indisponible');
+  return new Set(r.filter(x => x.document).map(x => plain(x.document)).filter(d => d.type === 'match').map(d => `${d.matchId}_${d.playerId}`));
 }
 
 // Clé Riot chiffrée (AES-256-GCM) avec une clé dérivée du mot de passe admin : elle n'est jamais lisible depuis la base

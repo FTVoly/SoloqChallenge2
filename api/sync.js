@@ -27,7 +27,9 @@ export default async function handler(req, res) {
   const force = checkPassword(req.headers['x-admin-password']);
   let headers;
   try { headers = await fsAuth(); } catch (e) { return res.status(500).json({ error: e.message }); }
-  const cfg = (await getDoc(headers, 'config/main')) || {};
+  let cfg;
+  try { cfg = (await getDoc(headers, 'config/main')) || {}; }
+  catch (e) { return res.status(503).json({ error: /quota/i.test(e.message) ? 'Quota gratuit de Firebase dépassé pour aujourd\'hui (il se remet à zéro vers 9 h, heure de Paris) : réessaie plus tard.' : `Firebase : ${e.message}` }); }
   if (cfg.finalJson) return res.status(200).json({ skipped: 'challenge clôturé' });
   if (!cfg.riotKeyEnc) return res.status(200).json({ skipped: 'aucune clé Riot enregistrée' });
   if (!force && cfg.lastServerSyncStart && t0 - cfg.lastServerSyncStart < MIN_INTERVAL) return res.status(200).json({ skipped: 'synchro récente' });
@@ -54,7 +56,11 @@ export default async function handler(req, res) {
 
   const start = parisToMs(cfg.challengeStart);
   const players = (await listDocs(headers, 'players')).sort((a, b) => (a.lastServerSync || 0) - (b.lastServerSync || 0));
-  const known = await knownMatches(headers);
+  // Seules les parties récentes peuvent revenir de Riot (startTime = historySince) : on ne relit que celles-là
+  const sinceAll = players.length ? Math.min(...players.map(p => Math.max(p.historySince || 0, Math.floor((start || 0) / 1000)))) : 0;
+  let known;
+  try { known = await knownMatches(headers, sinceAll > 0 ? (sinceAll - 6 * 3600) * 1000 : 0); }
+  catch (e) { return res.status(503).json({ error: /quota/i.test(e.message) ? 'Quota gratuit de Firebase dépassé pour aujourd\'hui (il se remet à zéro vers 9 h, heure de Paris).' : `Firebase : ${e.message}` }); }
   let done = 0, newGames = 0, stopped = '';
   const errors = [];
 
