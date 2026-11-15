@@ -1161,7 +1161,7 @@
             );
         };
 
-        const ShopView = ({ players, matches, purchases, effects, prices, config, onBuy, isAdmin, testMode, onCancel, bets = [], onBet, onDeleteBet }) => {
+        const ShopView = ({ players, matches, purchases, effects, prices, config, onBuy, isAdmin, testMode, onCancel, bets = [], onBet, onDeleteBet, onValidate }) => {
             const version = useDdragonVersion();
             const [buyerId, setBuyerId] = useState(() => { try { return localStorage.getItem('shopBuyer') || ''; } catch { return ''; } });
             const [targetId, setTargetId] = useState('');
@@ -1257,6 +1257,17 @@
                 catch (e) { setMsg({ ok: false, text: e.message || 'Impossible d\'annuler cet achat.' }); }
             };
 
+            const validate = async (x) => {
+                if (!window.confirm(`Compter l'achat de ${x.buyerName} (${purchaseLabel(x)}) ?\nIl devient un vrai achat : ${prices[x.kind]} points déduits, effets appliqués sur les parties jouées après ${formatDate(x.createdAt)}.`)) return;
+                try { await onValidate(x, prices[x.kind] || 0); setMsg({ ok: true, text: 'Achat validé : il compte maintenant.' }); }
+                catch (e) { setMsg({ ok: false, text: e.message || 'Impossible de valider cet achat.' }); }
+            };
+            const validateAll = async () => {
+                const list = purchases.filter(x => x.test);
+                if (!list.length || !window.confirm(`Compter les ${list.length} achats de test ? Ils deviennent de vrais achats (points déduits au prix actuel, effets appliqués).`)) return;
+                try { for (const x of list) await onValidate(x, prices[x.kind] || 0); setMsg({ ok: true, text: `${list.length} achats validés.` }); }
+                catch (e) { setMsg({ ok: false, text: e.message || 'Erreur pendant la validation.' }); }
+            };
             const feed = [...purchases].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 30);
             const feedTitle = (x) => {
                 if (x.kind === 'ban') return <><b>{x.buyerName}</b> a banni <b>{x.championName}</b> pour <b>{x.targetName}</b></>;
@@ -1395,7 +1406,10 @@
 
                     {/* Activité */}
                     <div className="bg-zinc-900/60 rounded-2xl border border-zinc-800 overflow-hidden">
-                        <div className="px-4 py-3 border-b border-zinc-800 font-heading font-bold text-sm uppercase tracking-wider text-zinc-300">Derniers achats</div>
+                        <div className="px-4 py-3 border-b border-zinc-800 flex items-center justify-between gap-2">
+                            <span className="font-heading font-bold text-sm uppercase tracking-wider text-zinc-300">Derniers achats</span>
+                            {isAdmin && purchases.some(x => x.test) && <button onClick={validateAll} className="text-xs font-bold px-3 py-1.5 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25">Compter tous les achats test ({purchases.filter(x => x.test).length})</button>}
+                        </div>
                         {feed.length === 0 && <div className="py-10 text-center text-zinc-500 italic text-sm">Aucun achat pour l'instant.</div>}
                         <div className="divide-y divide-zinc-800/60">
                             {feed.map(x => {
@@ -1411,6 +1425,9 @@
                                             <div className="text-xs font-bold text-zinc-300">{x.test ? <span className="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">TEST</span> : `−${x.price} pts`}</div>
                                             <div className="text-[11px] text-zinc-500">{formatDate(x.createdAt)}</div>
                                         </div>
+                                        {isAdmin && x.test && (
+                                            <button onClick={() => validate(x)} title="Compter cet achat (le rendre réel)" className="px-2 py-1 text-[11px] font-bold rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25 shrink-0">Compter</button>
+                                        )}
                                         {isAdmin && (
                                             <button onClick={() => cancel(x)} title="Annuler cet achat" className="p-2 text-zinc-500 hover:text-red-400 transition shrink-0"><Trash2 size={16} /></button>
                                         )}
@@ -2713,6 +2730,8 @@
                     notifyDiscord({ kind: 'bet', buyerName: player.playerName, label: side, price: Math.floor(Number(stake)), mode: String(cfg.odds || 1.4), test: !!test });
                 },
                 deleteBet: async (b) => deleteDoc(doc(db, 'history', b.id)),
+                // Transforme un achat de test en vrai achat (compté : LP, bans, pénalités, points déduits au prix actuel). Garde sa date, donc « la prochaine partie » reste celle qui suit l'achat.
+                validateTest: async (x, price) => updateDoc(doc(db, 'history', x.id), { test: false, forced: true, price }),
                 // Résultat du showmatch : calcule le gain de chaque pari (mise × cote), ou rembourse en cas d'annulation. Rejouable : corriger le résultat recalcule tout.
                 settleShow: async (result) => {
                     const show = parseJson(config?.showJson);
@@ -2985,7 +3004,7 @@
                         {tab === 'classement' && <Leaderboard players={playersView} isAdmin={isAdmin} onRequestDelete={setToDelete} onRequestEdit={setToEdit} />}
                         {tab === 'joueurs' && <PlayersList players={playersView} />}
                         {tab === 'historique' && <HistoryView history={historyView} players={playersView} purchases={purchases} statuses={allStatuses} onToggleAutofill={isAdmin ? (h => crud.updateHistoryDoc(h.id, { autofill: !h.autofill })) : null} />}
-                        {tab === 'boutique' && <ShopView bets={bets} onBet={crud.placeBet} onDeleteBet={crud.deleteBet} players={playersView} matches={matchList} purchases={purchases} effects={effects} prices={prices} config={config} onBuy={crud.buyItem} isAdmin={isAdmin} testMode={testMode} onCancel={crud.cancelPurchase} />}
+                        {tab === 'boutique' && <ShopView bets={bets} onBet={crud.placeBet} onDeleteBet={crud.deleteBet} onValidate={crud.validateTest} players={playersView} matches={matchList} purchases={purchases} effects={effects} prices={prices} config={config} onBuy={crud.buyItem} isAdmin={isAdmin} testMode={testMode} onCancel={crud.cancelPurchase} />}
                         {tab === 'duels' && <DuelsView duels={parseDuels(config)} players={playersView} />}
                         {tab === 'records' && <RecordsView players={playersView} matches={matchesFinal} />}
                         {tab === 'reglement' && <RulesView config={config} />}
