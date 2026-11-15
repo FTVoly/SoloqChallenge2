@@ -1550,8 +1550,11 @@
         const capOf = (config, now) => {
             const max = Math.round(Number(config?.capGames) || 0);
             const until = parisToMs(config?.capUntil);
-            const active = !!config?.capOn && max > 0 && (until == null || now < until);
-            return { max, until, active, on: !!config?.capOn };
+            // La limite vaut pour les parties lancées AVANT la date de fin (23:59 inclus -> jusqu'à minuit pile) ; toutes les parties lancées à partir de là comptent,
+            // et celles qui dépassaient la limite avant restent définitivement non comptées (jusqu'à ce que tu annules la limite)
+            const cutoff = until == null ? Infinity : Math.ceil(until / 60000) * 60000 + (until % 60000 === 0 ? 60000 : 0);
+            const active = !!config?.capOn && max > 0;
+            return { max, until, cutoff, ended: until != null && now >= cutoff, active, on: !!config?.capOn };
         };
         // Marque `uncounted` les parties au-delà de la limite, joueur par joueur, dans l'ordre chronologique (depuis son dernier reset ; remakes ignorés)
         const applyCap = (matches, cap, players) => {
@@ -1560,7 +1563,7 @@
             const seen = {};
             const over = new Set();
             [...matches].sort((a, b) => gameStart(a) - gameStart(b)).forEach(m => {
-                if (isRemake(m) || gameStart(m) < (resetAt[m.playerId] || 0)) return;
+                if (isRemake(m) || gameStart(m) < (resetAt[m.playerId] || 0) || gameStart(m) >= cap.cutoff) return;
                 seen[m.playerId] = (seen[m.playerId] || 0) + 1;
                 if (seen[m.playerId] > cap.max) over.add(m.id);
             });
@@ -1682,7 +1685,7 @@
             return (
                 <div className={`bg-zinc-900 p-6 rounded-2xl border ${cap.active ? 'border-amber-500/40' : 'border-zinc-800'}`}>
                     <h3 className="font-heading text-xl font-bold text-white flex items-center gap-2 mb-1"><Gamepad2 className="text-zinc-400" /> Limite de parties comptées</h3>
-                    <p className="text-xs text-zinc-400 mb-4">Seules les N premières parties de chaque joueur comptent (classement, LP, points de la boutique, records, stats). Les suivantes restent visibles dans l'historique, marquées « Non comptée ». La limite s'arrête toute seule à la date indiquée, ou quand tu l'annules : toutes les parties comptent alors immédiatement. Le comptage repart à zéro si tu réinitialises les LP d'un joueur ; les remakes ne comptent pas.</p>
+                    <p className="text-xs text-zinc-400 mb-4">Seules les N premières parties de chaque joueur comptent (classement, LP, points de la boutique, records, stats). Les suivantes restent visibles dans l'historique, marquées « Non comptée ». À la date de fin (23:59 = jusqu'à minuit), les parties suivantes comptent toutes, mais celles qui dépassaient la limite restent non comptées. Si tu annules la limite : toutes les parties comptent immédiatement. Le comptage repart à zéro si tu réinitialises les LP d'un joueur ; les remakes ne comptent pas.</p>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
                         <label className="text-xs text-zinc-400">Parties comptées par joueur<input type="number" min="1" value={max} onChange={e => setMax(e.target.value)} className={cls + ' w-full mt-1'} /></label>
                         <label className="text-xs text-zinc-400">Jusqu'au (heure de Paris, vide = jusqu'à annulation)<input type="datetime-local" value={until} onChange={e => setUntil(e.target.value)} className={cls + ' w-full mt-1'} /></label>
@@ -1693,9 +1696,9 @@
                         {cap.on && <button onClick={() => { if (window.confirm('Annuler la limite ? Toutes les parties compteront immédiatement.')) onUpdateConfig({ capOn: false }); }} className="px-4 py-2.5 rounded-xl text-sm font-bold bg-red-500/15 hover:bg-red-500/25 text-red-300 border border-red-500/30">Annuler la limite</button>}
                     </div>
                     <p className={`text-xs mt-3 ${cap.active ? 'text-amber-300' : 'text-zinc-500'}`}>
-                        {cap.active ? `Limite active : ${cap.max} parties comptées par joueur${cap.until ? `, jusqu'au ${fmtParis(cap.until)}` : ''}.` : cap.on ? 'La limite est terminée (date dépassée) : toutes les parties comptent.' : 'Aucune limite : toutes les parties comptent.'}
+                        {cap.active ? (cap.ended ? `Limite terminée : les parties lancées à partir du ${fmtParis(cap.cutoff)} comptent toutes. Celles qui dépassaient les ${cap.max} avant restent non comptées.` : `Limite active : ${cap.max} parties comptées par joueur${cap.until ? `, jusqu'au ${fmtParis(cap.until)}` : ''}.`) : 'Aucune limite : toutes les parties comptent.'}
                     </p>
-                    {cap.active && players.length > 0 && <div className="flex flex-wrap gap-2 mt-3">{players.map(p => <span key={p.id} className="text-xs px-2 py-1 rounded-lg bg-zinc-800 text-zinc-300">{p.playerName} <b className={(counts[p.id] || 0) >= cap.max ? 'text-amber-300' : 'text-white'}>{counts[p.id] || 0}/{cap.max}</b></span>)}</div>}
+                    {cap.active && !cap.ended && players.length > 0 && <div className="flex flex-wrap gap-2 mt-3">{players.map(p => <span key={p.id} className="text-xs px-2 py-1 rounded-lg bg-zinc-800 text-zinc-300">{p.playerName} <b className={(counts[p.id] || 0) >= cap.max ? 'text-amber-300' : 'text-white'}>{counts[p.id] || 0}/{cap.max}</b></span>)}</div>}
                 </div>
             );
         };
