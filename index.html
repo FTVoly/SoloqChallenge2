@@ -1792,7 +1792,7 @@
             const finalize = async () => {
                 if (!window.confirm('Faire le refresh final et annoncer le vainqueur ? Le classement sera figé, la boutique fermée et la synchronisation désactivée.')) return;
                 setBusy(true);
-                try { await onFinalizeNow(); } finally { setBusy(false); }
+                try { await onFinalizeNow(); } catch (e) { window.alert('La clôture a échoué : ' + (e?.message || e)); } finally { setBusy(false); }
             };
             const inputCls = 'w-full bg-zinc-950 border border-zinc-700 rounded-xl px-3 py-2 text-sm text-white';
             return (
@@ -2460,7 +2460,7 @@
             // Synchro automatique toutes les 30 min, tant que la page reste ouverte (admin connecté + clé Riot saisie)
             const [autoSync, setAutoSync] = useState(() => { try { return localStorage.getItem('autoSync') === '1'; } catch { return false; } });
             const toggleAuto = (v) => { setAutoSync(v); try { localStorage.setItem('autoSync', v ? '1' : '0'); } catch {} };
-            const finalizeNow = async (mode = 'manual') => { await handleSync(); await onFinalize(mode); };
+            const finalizeNow = async (mode = 'manual') => { try { await handleSync(); } catch {} await onFinalize(mode); };
             const syncRef = useRef(handleSync), finalRef = useRef(finalizeNow), cfgRef = useRef(config), lastRun = useRef(0), finalizing = useRef(false);
             syncRef.current = handleSync; finalRef.current = finalizeNow; cfgRef.current = config;
             // Vérifie chaque minute : synchro toutes les 30 min, et refresh final automatique dès que la date de fin est passée
@@ -2921,14 +2921,22 @@
                 const teams = { rouge: 0, bleu: 0 };
                 pv.forEach(p => { if (teams[p.team] !== undefined) teams[p.team] += Number(p.lpDelta) || 0; });
                 const cfgRef = doc(db, 'config', 'main');
-                const claimed = await runTransaction(db, async tx => {
-                    const snap = await tx.get(cfgRef);
-                    const cur = snap.exists() ? snap.data() : {};
-                    if (cur.finalJson) return false;
-                    if (mode === 'auto' && cur.autoClosedEnd === (cur.challengeEnd || '')) return false;
-                    tx.set(cfgRef, { ...(mode === 'auto' ? { autoClosedEnd: cur.challengeEnd || '' } : {}), finalJson: JSON.stringify({ mode, endAt: challengeWindow(config).end, finishedAt: Date.now(), winnerId: sorted[0]?.id || null, teams, players: sorted.map(p => ({ id: p.id, name: p.playerName, team: p.team || '', lp: p.lpDelta || 0, img: p.profileImg || '', rank: p.rankLabel || '' })) }) }, { merge: true });
-                    return true;
-                });
+                const finalJson = JSON.stringify({ mode, endAt: challengeWindow(config).end, finishedAt: Date.now(), winnerId: sorted[0]?.id || null, teams, players: sorted.map(p => ({ id: p.id, name: p.playerName, team: p.team || '', lp: p.lpDelta || 0, img: p.profileImg || '', rank: p.rankLabel || '' })) });
+                let claimed;
+                if (mode === 'manual') {
+                    // Clôture forcée : simple écriture, sans lecture préalable (marche même si la lecture en transaction échoue)
+                    await setDoc(cfgRef, { finalJson }, { merge: true });
+                    claimed = !final; // pas de deuxième annonce Discord si le challenge était déjà clôturé
+                } else {
+                    claimed = await runTransaction(db, async tx => {
+                        const snap = await tx.get(cfgRef);
+                        const cur = snap.exists() ? snap.data() : {};
+                        if (cur.finalJson) return false;
+                        if (cur.autoClosedEnd === (cur.challengeEnd || '')) return false;
+                        tx.set(cfgRef, { autoClosedEnd: cur.challengeEnd || '', finalJson }, { merge: true });
+                        return true;
+                    });
+                }
                 if (!claimed) return;
                 // Annonce du vainqueur dans le channel des récaps
                 try {
