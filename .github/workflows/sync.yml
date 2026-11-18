@@ -1,8 +1,6 @@
 name: Synchro SoloQ Challenge
 # Déclenche la synchro serveur toutes les 30 min (le serveur ignore l'appel si la dernière synchro a moins de 10 min)
 on:
-  schedule:
-    - cron: '*/30 * * * *'
   workflow_dispatch:
 jobs:
   sync:
